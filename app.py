@@ -2,6 +2,7 @@ import streamlit as st
 from supabase import create_client
 import pandas as pd
 import re
+import requests
 
 # [필수] 페이지 설정 (최상단 1회)
 st.set_page_config(page_title="Eye-Link 시스템", layout="centered")
