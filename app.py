@@ -2,6 +2,7 @@ import streamlit as st
 from supabase import create_client
 import pandas as pd
 import re
+import requests
 
 # [수정 1] 페이지 설정을 코드의 가장 첫 부분으로 이동 (이게 핵심입니다!)
 st.set_page_config(page_title="Eye-Link 시스템", layout="centered")
