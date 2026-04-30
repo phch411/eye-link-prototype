@@ -44,3 +44,35 @@ if st.button('데이터 갱신'):
         ))
     else:
         st.warning("현재 데이터베이스에 학생 데이터가 없습니다.")
+
+# 로그인 상태 관리 (세션 스테이트 활용)
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+
+def login():
+    st.sidebar.title("🏫 학교 로그인")
+    school_id = st.sidebar.text_input("학교 ID")
+    password = st.sidebar.text_input("비밀번호", type="password")
+    
+    if st.sidebar.button("로그인"):
+        # MVP 단계이므로 간단한 ID/PW 확인 (추후 DB 연동 가능)
+        if school_id == "admin" and password == "1234":
+            st.session_state['logged_in'] = True
+            st.rerun()
+        else:
+            st.sidebar.error("ID 또는 비밀번호가 일치하지 않습니다.")
+
+# 로그인 여부에 따른 화면 제어
+if not st.session_state['logged_in']:
+    st.title("🛡️ Eye-Link 시스템")
+    st.info("왼쪽 사이드바에서 학교 로그인을 진행해 주세요.")
+    login()
+else:
+    # --- 여기서부터 기존 대시보드 코드 ---
+    st.sidebar.success("로그인 성공!")
+    if st.sidebar.button("로그아웃"):
+        st.session_state['logged_in'] = False
+        st.rerun()
+    
+    # (이전의 지도 및 데이터 불러오기 코드 입력)
+    st.title("👁️ Eye-Link: 실시간 모니터링")
