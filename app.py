@@ -26,29 +26,39 @@ def load_data():
         return pd.DataFrame()
 
 # 5. [화면 1] 로그인 페이지 함수
+# --- [화면 1] 로그인 페이지 함수 (수정본) ---
 def show_login_page():
     _, col2, _ = st.columns([1, 2, 1])
     
     with col2:
-        st.write("") # 상단 여백
+        st.write("") 
         st.title("🛡️ Eye-Link")
-        st.subheader("특수아동 안전 관리 시스템")
+        st.subheader("학교 관리자 로그인")
         
         with st.container(border=True):
-            st.info("학교 관리자 계정으로 접속하세요.")
-            school_id = st.text_input("학교 식별 코드", placeholder="예: myeongdeok_01")
+            school_id = st.text_input("학교 식별 코드", placeholder="ID를 입력하세요")
             password = st.text_input("비밀번호", type="password")
             login_btn = st.button("시스템 접속", use_container_width=True)
             
             if login_btn:
-                # MVP용 임시 계정 (추후 DB 연동 가능)
-                if school_id == "admin" and password == "1234":
-                    st.session_state['logged_in'] = True
-                    st.rerun()
-                else:
-                    st.error("아이디 또는 비밀번호가 틀렸습니다.")
-        
-        st.caption("© 2026 Eye-Link Project. All rights reserved.")
+                # 1. Supabase의 users 테이블에서 해당 ID와 PW가 일치하는 데이터 찾기
+                try:
+                    user_query = supabase.table("users")\
+                        .select("*")\
+                        .eq("school_id", school_id)\
+                        .eq("password", password)\
+                        .execute()
+                    
+                    # 2. 결과가 존재하면 로그인 성공
+                    if len(user_query.data) > 0:
+                        st.session_state['logged_in'] = True
+                        st.session_state['school_name'] = user_query.data[0]['school_name']
+                        st.success(f"{st.session_state['school_name']}님, 환영합니다!")
+                        st.rerun()
+                    else:
+                        st.error("아이디 또는 비밀번호가 일치하지 않습니다.")
+                except Exception as e:
+                    st.error(f"로그인 처리 중 오류가 발생했습니다: {e}")
 
 # 6. [화면 2] 메인 대시보드 페이지 함수
 def show_main_dashboard():
