@@ -4,10 +4,10 @@ import pandas as pd
 import re
 import requests
 
-# [필수] 1순위: 페이지 설정 (절대 다른 명령보다 먼저 나와야 함)
+# [필수] 1순위: 페이지 설정은 무조건 코드 최상단에 딱 한 번만!
 st.set_page_config(page_title="Eye-Link 시스템", layout="centered")
 
-# --- 데이터베이스 관리 클래스 ---
+# --- 데이터베이스 및 API 관리 클래스 ---
 class EyeLinkDB:
     def __init__(self):
         try:
@@ -16,36 +16,43 @@ class EyeLinkDB:
             self.client = create_client(self.url, self.key)
             self.neis_key = st.secrets["neis"]["api_key"]
         except Exception as e:
-            st.error("설정 오류: Secrets 값을 확인하세요.")
+            st.error("설정 오류: Streamlit Cloud의 Secrets 설정을 확인해주세요.")
 
     def get_school_list(self, keyword):
         url = "https://open.neis.go.kr/hub/schoolInfo"
         params = {"KEY": self.neis_key, "Type": "json", "pIndex": 1, "pSize": 10, "SCHUL_NM": keyword}
         try:
             res = requests.get(url, params=params).json()
-            return res["schoolInfo"][1]["row"] if "schoolInfo" in res else []
-        except: return []
+            if "schoolInfo" in res:
+                return res["schoolInfo"][1]["row"]
+            return []
+        except:
+            return []
 
     def authenticate(self, u_id, pw):
         try:
             q = self.client.table("users").select("*").eq("school_id", u_id).eq("password", pw).execute()
             return q.data
-        except: return []
+        except:
+            return []
 
     def register(self, u_id, pw, name, addr):
         try:
             check = self.client.table("users").select("school_id").eq("school_id", u_id).execute()
-            if len(check.data) > 0: return False, "이미 존재하는 아이디입니다."
+            if len(check.data) > 0:
+                return False, "이미 존재하는 아이디입니다."
             data = {"school_id": u_id, "password": pw, "school_name": name, "address": addr}
             self.client.table("users").insert(data).execute()
             return True, "성공"
-        except Exception as e: return False, str(e)
+        except Exception as e:
+            return False, str(e)
 
     def fetch_students(self):
         try:
             q = self.client.table("students").select("*").execute()
             return pd.DataFrame(q.data)
-        except: return pd.DataFrame()
+        except:
+            return pd.DataFrame()
 
 # --- 앱 UI 관리 클래스 ---
 class EyeLinkApp:
@@ -56,8 +63,10 @@ class EyeLinkApp:
 
     def validate_pw(self, pw):
         if not pw: return None, ""
+        # 8자 이상, 영문, 숫자, 특수문자 조합 정규식
         reg = r"^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*#?&])[A-Za-z\d@$!%*#?&]{8,}$"
-        if re.match(reg, pw): return True, "✅ 사용 가능한 비밀번호입니다."
+        if re.match(reg, pw):
+            return True, "✅ 사용 가능한 비밀번호입니다."
         return False, "❌ 8자 이상, 영문+숫자+특수문자 필수"
 
     def show_login(self):
@@ -72,7 +81,8 @@ class EyeLinkApp:
                     st.session_state['logged_in'] = True
                     st.session_state['school_name'] = user[0]['school_name']
                     st.rerun()
-                else: st.error("정보 불일치")
+                else:
+                    st.error("정보가 일치하지 않습니다.")
             st.write("---")
             if st.button("신규 가입"):
                 st.session_state['show_signup'] = True
@@ -81,32 +91,51 @@ class EyeLinkApp:
     def show_signup(self):
         st.title("📝 학교 가입")
         with st.container(border=True):
-            s_input = st.text_input("1. 학교명 (2글자 이상)")
-            school = None
-            if len(s_input) >= 2:
-                list = self.db.get_school_list(s_input)
-                if list:
-                    opts = {f"{s['SCHUL_NM']} ({s['ORG_RDNMA']})": s for s in list}
-                    choice = st.selectbox("2. 학교 선택", ["선택하세요"] + list(opts.keys()))
-                    if choice != "선택하세요": school = opts[choice]
+            s_input = st.text_input("1. 학교명 (2글자 이상 입력)")
             
-            if school:
+            selected_school = None  # 초기화
+            
+            if len(s_input) >= 2:
+                school_list = self.db.get_school_list(s_input)
+                if school_list:
+                    # 학교 정보를 딕셔너리로 변환
+                    opts = {f"{s['SCHUL_NM']} ({s['ORG_RDNMA']})": s for s in school_list}
+                    choice = st.selectbox("2. 학교 선택", options=["선택하세요"] + list(opts.keys()))
+                    if choice != "선택하세요":
+                        selected_school = opts[choice]
+                else:
+                    st.warning("검색 결과가 없습니다.")
+
+            if selected_school:
                 st.divider()
-                s_name, s_addr = school['SCHUL_NM'], school['ORG_RDNMA']
-                st.success(f"📍 {s_name}")
-                u_id = st.text_input("3. 아이디")
-                pw = st.text_input("4. 비밀번호", type="password")
+                s_name = selected_school['SCHUL_NM']
+                s_addr = selected_school['ORG_RDNMA']
+                st.success(f"📍 선택됨: {s_name}")
+                
+                u_id = st.text_input("3. 아이디 설정")
+                pw = st.text_input("4. 비밀번호 설정", type="password")
+                
                 is_v, msg = self.validate_pw(pw)
-                if pw: st.success(msg) if is_v else st.error(msg)
+                if pw:
+                    if is_v: st.success(msg)
+                    else: st.error(msg)
+                
                 pw_c = st.text_input("5. 비밀번호 확인", type="password")
-                if st.button("가입 완료", use_container_width=True):
+                
+                if st.button("가입 신청", use_container_width=True):
                     if u_id and is_v and pw == pw_c:
                         ok, res = self.db.register(u_id, pw, s_name, s_addr)
-                        if ok: 
+                        if ok:
+                            st.success("가입되었습니다! 로그인해 주세요.")
                             st.session_state['show_signup'] = False
                             st.rerun()
-                        else: st.error(res)
-            if st.button("취소"):
+                        else:
+                            st.error(res)
+                    else:
+                        st.warning("모든 조건을 충족해야 합니다.")
+
+            st.write("---")
+            if st.button("이전으로"):
                 st.session_state['show_signup'] = False
                 st.rerun()
 
@@ -119,12 +148,14 @@ class EyeLinkApp:
         df = self.db.fetch_students()
         if not df.empty:
             st.map(df)
-            st.dataframe(df)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("관리 중인 학생 데이터가 없습니다.")
 
 # --- 실행부 ---
 if __name__ == "__main__":
-    # 클래스 생성 후 실행만 호출 (st.write 등에 절대 넣지 마세요)
     app = EyeLinkApp()
+    # 세션 상태에 따라 화면을 분기하여 직접 호출
     if st.session_state['logged_in']:
         app.show_main()
     elif st.session_state['show_signup']:
