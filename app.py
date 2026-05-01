@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import requests
 
-# [필수] 1순위: 페이지 설정 (코드 최상단 1회 실행)
+# [필수] 1순위: 페이지 설정
 st.set_page_config(page_title="Eye-Link 시스템", layout="centered")
 
 # --- 1. 데이터베이스 및 API 관리 클래스 ---
@@ -16,7 +16,7 @@ class EyeLinkDB:
             self.client = create_client(self.url, self.key)
             self.neis_key = st.secrets["neis"]["api_key"]
         except Exception as e:
-            st.error("설정 오류: Streamlit Secrets를 확인해주세요.")
+            st.error("설정 오류: Secrets를 확인하세요.")
 
     def get_school_list(self, keyword):
         url = "https://open.neis.go.kr/hub/schoolInfo"
@@ -49,7 +49,7 @@ class EyeLinkDB:
             return pd.DataFrame(q.data)
         except: return pd.DataFrame()
 
-# --- 2. UI 및 비즈니스 로직 제어 클래스 ---
+# --- 2. UI 제어 클래스 ---
 class EyeLinkApp:
     def __init__(self):
         self.db = EyeLinkDB()
@@ -90,12 +90,7 @@ class EyeLinkApp:
             if len(s_input) >= 2:
                 school_list = self.db.get_school_list(s_input)
                 if school_list:
-                    # [수정 포인트] 가독성을 높여 에러를 방지한 딕셔너리 생성 로직
-                    opts = {}
-                    for s in school_list:
-                        label = f"{s['SCHUL_NM']} ({s['ORG_RDNMA']})"
-                        opts[label] = s
-                    
+                    opts = {f"{s['SCHUL_NM']} ({s['ORG_RDNMA']})": s for s in school_list}
                     choice = st.selectbox("2. 학교 선택", options=["선택하세요"] + list(opts.keys()))
                     if choice != "선택하세요":
                         selected_school = opts[choice]
@@ -106,9 +101,16 @@ class EyeLinkApp:
                 s_name, s_addr = selected_school['SCHUL_NM'], selected_school['ORG_RDNMA']
                 st.info(f"📍 선택: {s_name}")
                 u_id = st.text_input("3. 아이디 설정")
+                
+                # --- [문제의 구간 수정] 비밀번호 검증 피드백 ---
                 pw = st.text_input("4. 비밀번호 설정", type="password")
                 is_v, msg = self.validate_pw(pw)
-                if pw: (st.success(msg) if is_v else st.error(msg))
+                if pw:
+                    if is_v:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                
                 pw_c = st.text_input("5. 비밀번호 확인", type="password")
                 
                 if st.button("가입 신청", use_container_width=True):
@@ -120,6 +122,7 @@ class EyeLinkApp:
                             st.session_state['show_signup'] = False
                             st.rerun()
                         else: st.error(res)
+                    else: st.warning("조건을 모두 충족해주세요.")
             
             st.write("---")
             if st.button("취소 및 이전으로"):
@@ -139,8 +142,12 @@ class EyeLinkApp:
             st.dataframe(df, use_container_width=True)
         else: st.info("학생 데이터가 없습니다.")
 
+# --- 실행부 ---
 if __name__ == "__main__":
     app = EyeLinkApp()
-    if st.session_state['logged_in']: app.show_dashboard()
-    elif st.session_state['show_signup']: app.show_signup_page()
-    else: app.show_login_page()
+    if st.session_state['logged_in']:
+        app.show_dashboard()
+    elif st.session_state['show_signup']:
+        app.show_signup_page()
+    else:
+        app.show_login_page()
