@@ -122,7 +122,6 @@ class EyeLinkApp:
                 st.rerun()
 
     def show_dashboard(self):
-        """사이드바 메뉴 구성 및 화면 분기"""
         user = st.session_state['user_info']
         
         # --- 사이드바 구성 ---
@@ -130,10 +129,10 @@ class EyeLinkApp:
         st.sidebar.write(f"ID: {user['school_id']}")
         st.sidebar.markdown("---")
         
-        # [메뉴 추가] 3가지 핵심 메뉴 선택
+        # [순서 변경] 요청하신 순서대로 메뉴 배치
         menu = st.sidebar.radio(
             "관리 메뉴",
-            ["학생별 상황", "실시간 아동 모니터링", "사전 위험구간 설정"]
+            ["실시간 학생 모니터링", "학생별 상황", "사전 위험구간 설정"]
         )
         
         st.sidebar.markdown("---")
@@ -141,51 +140,59 @@ class EyeLinkApp:
             st.session_state['logged_in'] = False
             st.rerun()
 
-        # --- 메뉴별 화면 렌더링 ---
+        # 데이터 호출
         df = self.db.fetch_students(user['school_id'])
 
-        if menu == "학생별 상황":
+        # --- 메뉴별 화면 렌더링 ---
+        if menu == "실시간 학생 모니터링":
+            st.title("👁️ 실시간 학생 모니터링")
+            if not df.empty:
+                # 화면 분할: 왼쪽(학생 명단), 오른쪽(지도)
+                col_list, col_map = st.columns([1, 3])
+                
+                with col_list:
+                    st.subheader("👤 학생 명단")
+                    # 학생 상태별 요약 표시
+                    for index, row in df.iterrows():
+                        status_color = "🟢" if row['status'] == "정상" else "🔴"
+                        st.write(f"{status_color} **{row['student_name']}**")
+                        st.caption(f"최근: {row.get('updated_at', '시간 정보 없음')}")
+                        st.write("---")
+
+                with col_map:
+                    # 지도에 학생별 위치 표시 (다양한 색상/마커 효과를 위해 st.map 대신 시각화 라이브러리 확장 가능)
+                    # 현재는 기본 st.map을 사용하되 리스트와 연동하여 강조
+                    st.map(df)
+                    st.dataframe(df[['student_name', 'status', 'lat', 'lon']], use_container_width=True)
+            else:
+                st.info("모니터링할 학생 데이터가 없습니다.")
+
+        elif menu == "학생별 상황":
             st.title("👤 학생별 세부 상황")
             if not df.empty:
-                # 학생 선택 셀렉트박스
-                student_names = df['student_name'].tolist()
-                selected_st = st.selectbox("조회할 학생을 선택하세요", student_names)
-                
+                selected_st = st.selectbox("조회할 학생을 선택하세요", df['student_name'].tolist())
                 st_info = df[df['student_name'] == selected_st].iloc[0]
-                col1, col2 = st.columns(2)
-                with col1:
+                
+                c1, c2 = st.columns(2)
+                with c1:
                     st.metric("현재 상태", st_info['status'])
-                    st.write(f"최근 수신 시각: {st_info.get('updated_at', 'N/A')}")
-                with col2:
-                    st.write(f"현재 위도: {st_info['lat']}")
-                    st.write(f"현재 경도: {st_info['lon']}")
+                with c2:
+                    st.write(f"📍 위도/경도: {st_info['lat']}, {st_info['lon']}")
                 
                 st.divider()
-                st.subheader(f"{selected_st} 학생 현재 위치")
                 st.map(df[df['student_name'] == selected_st])
             else:
-                st.info("등록된 학생 데이터가 없습니다.")
-
-        elif menu == "실시간 아동 모니터링":
-            st.title("👁️ 실시간 아동 모니터링")
-            if not df.empty:
-                # 전체 지도 및 리스트
-                st.map(df)
-                st.subheader("전체 학생 위치 현황")
-                st.dataframe(df, use_container_width=True)
-            else:
-                st.info("모니터링할 데이터가 없습니다.")
+                st.info("학생 데이터가 없습니다.")
 
         elif menu == "사전 위험구간 설정":
             st.title("⚠️ 사전 위험구간 설정")
-            st.info("학교 주변 통학로 중 주의가 필요한 구간(Geo-fence)을 설정하는 페이지입니다.")
-            with st.expander("위험구간 등록하기"):
-                zone_name = st.text_input("구간 명칭 (예: 정문 앞 사거리)")
-                st.text_input("중심 위도")
-                st.text_input("중심 경도")
-                st.slider("감지 반경 (m)", 10, 500, 50)
-                if st.button("구간 저장"):
-                    st.success(f"'{zone_name}' 구간이 등록되었습니다.")
+            st.info("주의가 필요한 구역을 설정하고 관리합니다.")
+            with st.expander("신규 위험구간 등록"):
+                st.text_input("구간 명칭")
+                st.number_input("중심 위도", format="%.6f")
+                st.number_input("중심 경도", format="%.6f")
+                st.slider("감지 반경(m)", 10, 500, 50)
+                st.button("저장하기")
 
 # --- 3. 실행부 ---
 if __name__ == "__main__":
