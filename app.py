@@ -6,7 +6,7 @@ import requests
 import streamlit.components.v1 as components
 from datetime import datetime
 
-# 1. 페이지 설정
+# [필수] 1순위: 페이지 설정
 st.set_page_config(page_title="Eye-Link", layout="wide")
 
 # --- 1. 데이터베이스 관리 클래스 (Model) ---
@@ -18,9 +18,10 @@ class EyeLinkDB:
             self.client = create_client(self.url, self.key)
             self.neis_key = st.secrets["neis"]["api_key"]
         except Exception as e:
-            st.error("설정 오류: Secrets를 확인해주세요.")
+            st.error("설정 오류: Streamlit Secrets를 확인해주세요.")
 
     def authenticate(self, u_id, pw):
+        """[해결] users 테이블에서 공백 제거 후 인증"""
         try:
             res = self.client.table("users").select("*").eq("school_id", u_id.strip()).execute()
             if res.data:
@@ -49,13 +50,14 @@ class EyeLinkDB:
         except: return False, "DB 오류"
 
     def fetch_students(self, school_id):
-        """학생 목록과 최신 위치/상태를 함께 가져옴"""
+        """학생 목록과 최신 상태 정보를 가져옴"""
         try:
             q = self.client.table("students").select("*").eq("school_id", school_id).order("student_name").execute()
             return pd.DataFrame(q.data)
         except: return pd.DataFrame()
 
     def fetch_location_logs(self, student_id):
+        """특정 학생의 최신 동선 로그 가져오기"""
         try:
             res = self.client.table("location_logs")\
                 .select("created_at, lat, lon")\
@@ -93,7 +95,7 @@ class EyeLinkApp:
                         st.session_state['logged_in'] = True
                         st.session_state['user_info'] = user[0]
                         st.rerun()
-                    else: st.error("정보를 확인해주세요.")
+                    else: st.error("정보를 다시 확인해 주세요.")
                 st.write("---")
                 if st.button("우리 학교 등록하기", use_container_width=True):
                     st.session_state['show_signup'] = True
@@ -122,7 +124,7 @@ class EyeLinkApp:
         user = st.session_state['user_info']
         st.sidebar.title(f"🏫 {user['school_name']}")
         
-        # [해결] 실시간 갱신을 위해 데이터 로드
+        # 실시간 상태 갱신을 위해 명단 데이터 로드
         df_students = self.db.fetch_students(user['school_id'])
         
         menu = st.sidebar.radio("관리 메뉴", ["실시간 학생 모니터링", "학생 위치 전송 시스템"])
@@ -135,12 +137,9 @@ class EyeLinkApp:
                 with c1:
                     st.subheader("👤 명단")
                     for _, row in df_students.iterrows():
-                        # [해결] 실시간 전송 상태 표시 (status 컬럼 기준)
-                        # GPS 전송 중이면 초록색, 아니면 빨간색 아이콘
+                        # [해결] 실시간 상태 표시 (🟢 전송중 / 🔴 중단)
                         status_icon = "🟢" if row.get('status') == "전송중" else "🔴"
-                        btn_label = f"{status_icon} {row['student_name']}"
-                        
-                        if st.button(btn_label, key=f"s_{row['id']}", use_container_width=True):
+                        if st.button(f"{status_icon} {row['student_name']}", key=f"s_{row['id']}", use_container_width=True):
                             st.session_state['selected_student_id'] = row['id']
                             st.session_state['selected_student_name'] = row['student_name']
                             st.rerun()
@@ -149,128 +148,118 @@ class EyeLinkApp:
                     if st.session_state.get('selected_student_id'):
                         logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
                     self.render_kakao_map(df_students, logs_df)
-            else: st.info("전송 시스템에서 먼저 이름을 등록해주세요.")
+            else: st.info("데이터가 없습니다. 학생용 화면에서 전송을 시작해주세요.")
 
         elif menu == "학생 위치 전송 시스템":
             st.title("📲 학생 위치 전송 시스템")
             with st.container(border=True):
-                s_name = st.text_input("학생 이름 입력")
+                s_name = st.text_input("학생 이름 입력", placeholder="이름을 입력하면 모니터링 명단에 등록됩니다.")
                 if st.button("🚀 위치 전송 시작", use_container_width=True, type="primary"):
                     if s_name:
                         st.session_state['tracking_active'] = True
                         st.success(f"{s_name} 학생 전송 시작!")
                     else: st.warning("이름을 입력해주세요.")
-                if st.button("⏹️ 전송 중지"):
-                    st.session_state['tracking_active'] = False
-                    # [해결] 중지 시 상태 업데이트를 위한 JS 호출은 render 내에서 처리
-                    st.rerun()
+                if st.button("⏹️ 전송 중지"): st.session_state['tracking_active'] = False; st.rerun()
                 if st.session_state['tracking_active']:
                     self.render_gps_sender(s_name, user['school_id'])
 
-    def render_kakao_map(self, df_students, logs_df):
-        """
-        [수정사항]
-        1. AttributeError 방지를 위한 변수 체크 강화
-        2. 기본 위치(임의 좌표) 로직 완전 제거
-        3. 실시간 연결(logs_df 있음) 시에만 빨간색 원 깜빡임
-        4. 미연결(logs_df 없음) 시 마지막 위치에 깜빡임 없이 고정 표시
-        """
-        if df_students.empty:
-            return
+    def render_gps_sender(self, s_name, school_id):
+        """[해결] 로그 미전송 문제 해결을 위한 디버깅 강화 스크립트"""
+        url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
+        gps_js = f"""
+        <script>
+        const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
+        const studentId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000).toString().padStart(6,'0');
         
-        # 현재 선택된 학생 ID 확인
+        async function startSystem() {{
+            console.log("위치 전송 시스템 시작: ", sName, studentId);
+            try {{
+                await fetch(sUrl + "/rest/v1/students", {{
+                    method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
+                    body: JSON.stringify({{ id: studentId, student_name: sName, school_id: schoolId, status: "전송중", lat: 0, lon: 0 }})
+                }});
+            }} catch (e) {{ console.error("학생 등록 실패:", e); }}
+
+            setInterval(() => {{
+                navigator.geolocation.getCurrentPosition(async (pos) => {{
+                    const lat = pos.coords.latitude, lon = pos.coords.longitude;
+                    const timestamp = new Date().toISOString();
+
+                    fetch(sUrl + "/rest/v1/location_logs", {{
+                        method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
+                        body: JSON.stringify({{ student_id: studentId, student_name: sName, lat: lat, lon: lon, created_at: timestamp }})
+                    }}).then(r => console.log("로그 전송 결과:", r.status));
+
+                    fetch(sUrl + "/rest/v1/students?id=eq." + studentId, {{
+                        method: "PATCH", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
+                        body: JSON.stringify({{ lat: lat, lon: lon, status: "전송중" }})
+                    }}).then(r => console.log("최신 위치 업데이트 결과:", r.status));
+                }}, (err) => {{ console.error("GPS 오류:", err.message); }}, {{ enableHighAccuracy: true }});
+            }}, 10000);
+        }}
+        startSystem();
+        </script>
+        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px;">
+            <h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h4>
+        </div>
+        """
+        components.html(gps_js, height=120)
+
+    def render_kakao_map(self, df_students, logs_df):
+        """[해결] 지도 마커 연동 및 깜빡임/고정 로직 반영"""
+        if df_students.empty: return
         selected_id = st.session_state.get('selected_student_id')
         
-        # 1. 표시할 좌표 결정 (기본 위치 없음)
+        # 1. 중심점 및 연결 상태 확인
         if not logs_df.empty:
-            # 실시간 로그가 있는 경우 (최신 위치)
             lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
             is_active = True
         else:
-            # 실시간 로그가 없는 경우 -> students 테이블에서 마지막 저장 위치 확인
-            current_student = df_students[df_students['id'].astype(str) == str(selected_id)] if selected_id else pd.DataFrame()
-            
-            if not current_student.empty and current_student.iloc[0]['lat'] != 0:
-                lat, lon = current_student.iloc[0]['lat'], current_student.iloc[0]['lon']
+            current = df_students[df_students['id'].astype(str) == str(selected_id)] if selected_id else pd.DataFrame()
+            if not current.empty and current.iloc[0]['lat'] != 0:
+                lat, lon = current.iloc[0]['lat'], current_student.iloc[0]['lon']
                 is_active = False
             else:
-                # 위치 기록이 아예 없는 학생이면 안내 후 종료
-                st.info("선택한 학생의 위치 기록이 아직 없습니다.")
-                return
+                st.info("위치 기록이 아직 없습니다."); return
 
         kakao_key = st.secrets['kakao']['js_key']
-        
-        # 2. 다른 학생들 마커 표시
-        others_js = ""
+        all_markers_js = ""
         for _, r in df_students.iterrows():
             if r['lat'] != 0 and str(r['id']) != str(selected_id):
-                others_js += f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({r['lat']}, {r['lon']}), map: map, title: '{r['student_name']}' }});"
+                all_markers_js += f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({r['lat']}, {r['lon']}), map: map, title: '{r['student_name']}' }});"
 
-        # 3. 선택된 학생 표시 로직 (연결 상태에 따른 차등)
         target_js = ""
         if is_active:
-            # [연결됨] 빨간색 깜빡이는 원형 커스텀 오버레이
-            target_js = f"""
-            var content = '<div class="pulse-marker"></div>';
-            var overlay = new kakao.maps.CustomOverlay({{
-                position: new kakao.maps.LatLng({lat}, {lon}),
-                content: content,
-                map: map,
-                yAnchor: 0.5
-            }});
-            """
+            target_js = f"var content = '<div class=\"pulse-marker\"></div>'; new kakao.maps.CustomOverlay({{position:new kakao.maps.LatLng({lat},{lon}), content:content, map:map, yAnchor:0.5}});"
         else:
-            # [미연결] 깜빡임 없는 일반 마커 (마지막 위치)
-            target_js = f"""
-            new kakao.maps.Marker({{
-                position: new kakao.maps.LatLng({lat}, {lon}),
-                map: map,
-                title: '마지막 위치'
-            }});
-            """
+            target_js = f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat},{lon}), map: map, title: '마지막 위치' }});"
 
         map_html = f"""
         <html>
         <head>
-            <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
             <style>
                 #map {{ width: 100%; height: 600px; border-radius: 15px; background: #eee; }}
-                .pulse-marker {{
-                    width: 20px; height: 20px; background: #FF0000;
-                    border: 3px solid #FFFFFF; border-radius: 50%;
-                    box-shadow: 0 0 12px rgba(255, 0, 0, 0.8);
-                    animation: pulse-ring 1.5s infinite;
-                }}
-                @keyframes pulse-ring {{
-                    0% {{ transform: scale(0.8); box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }}
-                    70% {{ transform: scale(1.2); box-shadow: 0 0 0 15px rgba(255, 0, 0, 0); }}
-                    100% {{ transform: scale(0.8); box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }}
-                }}
+                .pulse-marker {{ width: 18px; height: 18px; background: #FF0000; border: 3px solid #FFF; border-radius: 50%; box-shadow: 0 0 10px rgba(255,0,0,0.7); animation: pulse 1.5s infinite; }}
+                @keyframes pulse {{ 0% {{ transform: scale(0.95); opacity: 1; }} 70% {{ transform: scale(1.1); opacity: 0.7; }} 100% {{ transform: scale(0.95); opacity: 1; }} }}
             </style>
         </head>
         <body style="margin:0;"><div id="map"></div>
-            <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
+            <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
             <script>
-                function initMap() {{
-                    if (typeof kakao === 'undefined' || !kakao.maps) {{
-                        setTimeout(initMap, 100);
-                        return;
-                    }}
+                function init() {{
+                    if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
                     kakao.maps.load(function() {{
-                        var container = document.getElementById('map');
-                        var options = {{ center: new kakao.maps.LatLng({lat}, {lon}), level: 3 }};
-                        var map = new kakao.maps.Map(container, options);
-                        {others_js}
-                        {target_js}
+                        var map = new kakao.maps.Map(document.getElementById('map'), {{ center: new kakao.maps.LatLng({lat}, {lon}), level: 3 }});
+                        {all_markers_js} {target_js}
                     }});
                 }}
-                initMap();
+                init();
             </script>
         </body></html>
         """
         components.html(map_html, height=620)
 
-# 실행부
+# --- 3. 실행부 ---
 if __name__ == "__main__":
     app = EyeLinkApp()
     if st.session_state.get('logged_in'): app.show_dashboard()
