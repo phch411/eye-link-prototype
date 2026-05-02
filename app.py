@@ -169,34 +169,62 @@ class EyeLinkApp:
 
     def render_kakao_map(self, df):
         if df.empty:
+            st.info("표시할 위치 데이터가 없습니다.")
             return
 
+        # 1. 데이터 준비
         lat, lon = df.iloc[0]['lat'], df.iloc[0]['lon']
-        markers = ""
-        for _, r in df.iterrows():
-            markers += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']}), title:'{r['student_name']}'}});"
-
-        # [수정된 부분] 보안 문제 해결을 위한 로직
         kakao_key = st.secrets['kakao']['js_key']
         
+        # 2. 마커 생성 스크립트
+        markers_js = ""
+        for _, r in df.iterrows():
+            markers_js += f"""
+                new kakao.maps.Marker({{
+                    map: map,
+                    position: new kakao.maps.LatLng({r['lat']}, {r['lon']}),
+                    title: '{r['student_name']}'
+                }});
+            """
+
+        # 3. HTML 및 JS (보안 및 로딩 속도 최적화 버전)
         map_html = f"""
-        <div id="map" style="width:100%;height:500px;border-radius:15px;"></div>
-        <!-- http를 https로 명시하고, autoload=false를 추가합니다 -->
+        <div id="map" style="width:100%;height:500px;border-radius:15px;background-color:#f0f0f0;"></div>
+        
+        <!-- 카카오맵 SDK 로드 (https 명시 및 autoload=false) -->
         <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
+        
         <script>
-            // 지도를 명시적으로 로드합니다.
-            kakao.maps.load(function() {{
-                var container = document.getElementById('map');
-                var options = {{
-                    center: new kakao.maps.LatLng({lat}, {lon}),
-                    level: 3
-                }};
-                var map = new kakao.maps.Map(container, options);
-                {markers}
-            }});
+        (function() {{
+            function initMap() {{
+                // 카카오맵 라이브러리가 로드되었는지 확인 후 실행
+                if (typeof kakao === 'undefined' || !kakao.maps) {{
+                    setTimeout(initMap, 100); // 0.1초 후 재시도
+                    return;
+                }}
+
+                kakao.maps.load(function() {{
+                    var container = document.getElementById('map');
+                    var options = {{
+                        center: new kakao.maps.LatLng({lat}, {lon}),
+                        level: 3
+                    }};
+                    var map = new kakao.maps.Map(container, options);
+                    
+                    // 마커 추가
+                    {markers_js}
+                    
+                    // 지도가 잘 떴는지 확인용 콘솔로그
+                    console.log("카카오맵 로드 완료");
+                }});
+            }}
+            initMap();
+        }})();
         </script>
         """
-        components.html(map_html, height=520)
+        
+        # 렌더링
+        components.html(map_html, height=550)
 
 # --- 3. 실행부 ---
 if __name__ == "__main__":
