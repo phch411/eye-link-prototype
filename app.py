@@ -4,126 +4,151 @@ import pandas as pd
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
 
-# [필수] 페이지 설정
+# 1. 페이지 설정 (가장 먼저 실행되어야 함)
 st.set_page_config(page_title="Eye-Link", layout="wide")
+
+# 2. 세션 상태 초기화 (KeyError 방지)
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = True  # 발표용 자동 로그인
+if 'user_info' not in st.session_state:
+    # 선생님의 부곡초 학포분교 설정
+    st.session_state['user_info'] = {"school_id": "bugok_hakpo", "school_name": "부곡초등학교 학포분교"}
+if 'selected_student_id' not in st.session_state:
+    st.session_state['selected_student_id'] = None
+if 'selected_student_name' not in st.session_state:
+    st.session_state['selected_student_name'] = None
 
 class EyeLinkApp:
     def __init__(self):
-        # 세션 상태 초기화
-        if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
-        if 'user_info' not in st.session_state: st.session_state['user_info'] = None
-        if 'selected_student' not in st.session_state: st.session_state['selected_student'] = None
-        
-        # DB 연결 (기존 설정 유지)
+        # 수파베이스 연결
         try:
             self.url = st.secrets["supabase"]["url"]
             self.key = st.secrets["supabase"]["key"]
             self.client = create_client(self.url, self.key)
-        except: pass
+        except Exception as e:
+            st.error(f"수파베이스 연결 실패: {e}")
 
     def fetch_students(self, school_id):
+        """학생 목록 가져오기 (지도 마커용 및 명단용)"""
         try:
-            q = self.client.table("students").select("*").eq("school_id", school_id).execute()
-            return pd.DataFrame(q.data)
-        except: return pd.DataFrame()
+            res = self.client.table("students").select("*").eq("school_id", school_id).execute()
+            return pd.DataFrame(res.data)
+        except:
+            return pd.DataFrame()
 
-    def show_dashboard(self):
-        user = st.session_state['user_info']
-        
-        # 뒤로가기 버튼 (학생 상세 보기 중일 때)
-        if st.session_state['selected_student']:
-            if st.button("⬅️ 전체 목록으로 돌아가기"):
-                st.session_state['selected_student'] = None
-                st.rerun()
-            self.show_student_logs(st.session_state['selected_student'])
-            return
-
-        st.title("👁️ 실시간 학생 모니터링")
-        df = self.fetch_students(user['school_id'])
-
-        col_list, col_map = st.columns([1, 3])
-
-        with col_list:
-            st.subheader("👤 학생 명단")
+    def fetch_location_logs(self, student_id):
+        """수파베이스 location_logs 테이블에서 10초 단위 기록 가져오기"""
+        try:
+            # 10초 단위로 쌓인 로그 중 최신 50개 추출
+            res = self.client.table("location_logs")\
+                .select("created_at, lat, lon")\
+                .eq("student_id", student_id)\
+                .order("created_at", desc=True)\
+                .limit(50)\
+                .execute()
+            
+            df = pd.DataFrame(res.data)
             if not df.empty:
-                for _, row in df.iterrows():
-                    # [기능 2] 기기 연결 상태 확인 (최근 5분 이내 업데이트 기준)
-                    last_update = pd.to_datetime(row.get('updated_at'))
-                    is_online = (datetime.now() - last_update.replace(tzinfo=None)) < timedelta(minutes=5)
-                    
-                    status_color = "🟢" if is_online else "🔴"
-                    status_text = "연결됨" if is_online else "연결 끊김"
-                    
-                    # [기능 3] 학생 이름 클릭 시 상세 페이지 이동
-                    if st.button(f"{status_color} {row['student_name']}", key=row['student_name'], use_container_width=True):
-                        st.session_state['selected_student'] = row.to_dict()
-                        st.rerun()
-                    
-                    st.caption(f"상태: {status_text} (최근: {last_update.strftime('%H:%M')})")
-                    st.write("")
-            else:
-                st.info("등록된 학생이 없습니다.")
-
-        with col_map:
-            # [기능 1] 지도의 세로 크기를 700px로 키움
-            self.render_kakao_map(df, height=700)
-
-    def show_student_logs(self, student):
-        """학생별 위치 로그 상세 창"""
-        st.title(f"📍 {student['student_name']} 학생 이동 로그")
-        st.write(f"현재 위치: 위도 {student['lat']}, 경도 {student['lon']}")
-        
-        # 실제 구현 시에는 위치 기록(history) 테이블에서 데이터를 가져와 표로 보여줍니다.
-        st.subheader("최근 이동 기록")
-        dummy_data = {
-            "시간": ["10:30", "10:35", "10:40"],
-            "장소": ["학교 정문", "도서관 앞", "교실"],
-            "상태": ["정상", "정상", "정상"]
-        }
-        st.table(pd.DataFrame(dummy_data))
+                # 시간 형식 보기 좋게 변환 (한국 시간 기준)
+                df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                df.columns = ['기록 시간', '위도(Lat)', '경도(Lon)']
+            return df
+        except:
+            return pd.DataFrame()
 
     def render_kakao_map(self, df, height):
+        """카카오맵 렌더링 (보안 정책 및 로딩 지연 해결 버전)"""
         if df.empty:
-            st.warning("지도에 표시할 데이터가 없습니다.")
+            st.info("지도에 표시할 위치 정보가 없습니다.")
             return
 
-        lat, lon = df.iloc[0]['lat'], df.iloc[0]['lon']
+        # 지도 중심점 설정 (첫 번째 학생 기준)
+        center_lat, center_lon = df.iloc[0]['lat'], df.iloc[0]['lon']
         kakao_key = st.secrets['kakao']['js_key']
         
+        # 마커 생성 스크립트
         markers_js = ""
         for _, r in df.iterrows():
-            markers_js += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']}), title:'{r['student_name']}'}});"
+            markers_js += f"""
+                new kakao.maps.Marker({{
+                    map: map,
+                    position: new kakao.maps.LatLng({r['lat']}, {r['lon']}),
+                    title: '{r['student_name']}'
+                }});
+            """
 
         map_html = f"""
         <html>
-        <head><meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests"></head>
+        <head>
+            <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+            <style>body, html, #map {{width:100%; height:100%; margin:0; padding:0; border-radius:15px;}}</style>
+        </head>
         <body>
-            <div id="map" style="width:100%;height:{height}px;border-radius:15px;"></div>
+            <div id="map"></div>
             <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
             <script>
-                function init() {{
-                    if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
+                function initMap() {{
+                    if (typeof kakao === 'undefined' || !kakao.maps) {{
+                        setTimeout(initMap, 100);
+                        return;
+                    }}
                     kakao.maps.load(function() {{
-                        var map = new kakao.maps.Map(document.getElementById('map'), {{
-                            center: new kakao.maps.LatLng({lat}, {lon}), level: 3
-                        }});
+                        var container = document.getElementById('map');
+                        var options = {{
+                            center: new kakao.maps.LatLng({center_lat}, {center_lon}),
+                            level: 3
+                        }};
+                        var map = new kakao.maps.Map(container, options);
                         {markers_js}
                     }});
                 }}
-                init();
+                initMap();
             </script>
         </body>
         </html>
         """
-        components.html(map_html, height=height + 20)
+        components.html(map_html, height=height)
 
-# --- 실행부 ---
+    def show_dashboard(self):
+        user = st.session_state['user_info']
+        
+        st.title(f"👁️ Eye-Link: {user['school_name']} 모니터링")
+        st.write("---")
+
+        # 메인 레이아웃: 왼쪽(학생 명단) | 오른쪽(지도)
+        col_list, col_map = st.columns([1, 3])
+
+        with col_list:
+            st.subheader("👤 학생 명단")
+            df_students = self.fetch_students(user['school_id'])
+            
+            if not df_students.empty:
+                for _, row in df_students.iterrows():
+                    # 버튼 클릭 시 해당 학생의 로그를 불러오도록 상태 변경
+                    if st.button(f"📍 {row['student_name']}", key=f"btn_{row['student_id']}", use_container_width=True):
+                        st.session_state['selected_student_id'] = row['student_id']
+                        st.session_state['selected_student_name'] = row['student_name']
+                        st.rerun()
+            else:
+                st.info("학생 데이터가 없습니다.")
+
+        with col_map:
+            # 지도의 세로 크기를 650px로 키움
+            self.render_kakao_map(df_students, height=650)
+
+        # 학생 클릭 시 나타나는 하단 로그 섹션
+        if st.session_state['selected_student_id']:
+            st.write("---")
+            st.subheader(f"📊 {st.session_state['selected_student_name']} 학생 상세 이동 로그 (10초 단위)")
+            
+            logs_df = self.fetch_location_logs(st.session_state['selected_student_id'])
+            
+            if not logs_df.empty:
+                st.dataframe(logs_df, use_container_width=True, height=350)
+            else:
+                st.warning("기록된 이동 로그가 없습니다.")
+
+# 3. 앱 실행
 if __name__ == "__main__":
-    # 임시 로그인 세션 (테스트용)
-    if not st.session_state['logged_in']:
-        # 선생님 계정 정보로 자동 로그인 처리 (발표용)
-        st.session_state['logged_in'] = True
-        st.session_state['user_info'] = {"school_id": "bugok_hakpo", "school_name": "부곡초등학교 학포분교"}
-    
     app = EyeLinkApp()
     app.show_dashboard()
