@@ -86,7 +86,7 @@ class EyeLinkApp:
     def render_kakao_map(self, df_students, logs_df):
         if df_students.empty: return
         
-        # 중심점 설정
+        # 1. 중심점 설정 (선택된 학생의 최신 로그 우선, 없으면 첫 번째 학생)
         if not logs_df.empty:
             lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
         else:
@@ -94,33 +94,47 @@ class EyeLinkApp:
 
         kakao_key = st.secrets['kakao']['js_key']
         
-        # 1. 전체 학생 마커 (선택되지 않은 학생들)
-        other_markers = ""
+        # 2. 다른 학생들 마커 (선택되지 않은 학생)
+        other_markers_js = ""
         for _, r in df_students.iterrows():
-            if str(r['id']) != str(st.session_state['selected_student_id']):
-                other_markers += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']})}});"
+            if str(r['id']) != str(st.session_state.get('selected_student_id')):
+                other_markers_js += f"""
+                new kakao.maps.Marker({{
+                    map: map,
+                    position: new kakao.maps.LatLng({r['lat']}, {r['lon']}),
+                    title: '{r['student_name']}'
+                }});
+                """
 
-        # 2. 이동 동선 및 마지막 위치 깜빡임
+        # 3. 선택된 학생의 동선 및 깜빡이는 현재 위치
         path_js = ""
-        current_marker_js = ""
+        blink_overlay_js = ""
+        
         if not logs_df.empty:
             for i, r in logs_df.iterrows():
-                # 순서 파악을 위해 인덱스가 커질수록(과거일수록) 투명도 낮춤
-                opacity = max(0.1, 1.0 - (i * 0.05))
-                if i == 0: # 최신 위치 (깜빡이는 커스텀 오버레이)
-                    current_marker_js = f"""
-                    var content = '<div class="blink-marker"></div>';
-                    var overlay = new kakao.maps.CustomOverlay({{
+                # [순서 표시] 과거로 갈수록 점이 작아지고 흐려짐
+                opacity = max(0.2, 1.0 - (i * 0.05))
+                radius = max(2, 6 - (i * 0.2))
+                
+                if i == 0: # 최신 위치: 카카오맵 CustomOverlay로 깜빡임 구현
+                    blink_overlay_js = f"""
+                    var content = '<div class="pulse-marker"></div>';
+                    var customOverlay = new kakao.maps.CustomOverlay({{
+                        position: new kakao.maps.LatLng({r['위도']}, {r['경도']}),
                         content: content,
-                        map: map,
-                        position: new kakao.maps.LatLng({r['위도']}, {r['경도']})
+                        yAnchor: 0.5
                     }});
+                    customOverlay.setMap(map);
                     """
-                else: # 과거 동선 점
+                else: # 과거 이동 동선 (빨간 점들)
                     path_js += f"""
                     new kakao.maps.Circle({{
-                        map: map, center: new kakao.maps.LatLng({r['위도']}, {r['경도']}),
-                        radius: 4, strokeWeight: 0, fillColor: '#FF3333', fillOpacity: {opacity}
+                        map: map,
+                        center: new kakao.maps.LatLng({r['위도']}, {r['경도']}),
+                        radius: {radius},
+                        strokeWeight: 0,
+                        fillColor: '#FF0000',
+                        fillOpacity: {opacity}
                     }});
                     """
 
@@ -129,16 +143,21 @@ class EyeLinkApp:
         <head>
             <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
             <style>
-                #map {{ width:100%; height:650px; border-radius:15px; }}
-                .blink-marker {{
-                    width: 15px; height: 15px; background-color: #FF0000;
-                    border-radius: 50%; border: 3px solid white;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.5);
-                    animation: blink 1s infinite alternate;
+                #map {{ width: 100%; height: 650px; border-radius: 15px; }}
+                /* 깜빡이는 애니메이션 정의 */
+                .pulse-marker {{
+                    width: 16px;
+                    height: 16px;
+                    background-color: #FF0000;
+                    border: 3px solid #FFFFFF;
+                    border-radius: 50%;
+                    box-shadow: 0 0 0 rgba(255, 0, 0, 0.4);
+                    animation: pulse 1.5s infinite;
                 }}
-                @keyframes blink {{
-                    from {{ opacity: 1; transform: scale(1); }}
-                    to {{ opacity: 0.3; transform: scale(1.2); }}
+                @keyframes pulse {{
+                    0% {{ box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }}
+                    70% {{ box-shadow: 0 0 0 15px rgba(255, 0, 0, 0); }}
+                    100% {{ box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }}
                 }}
             </style>
         </head>
@@ -146,16 +165,25 @@ class EyeLinkApp:
             <div id="map"></div>
             <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
             <script>
-                function init() {{
-                    if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
+                function initMap() {{
+                    if (typeof kakao === 'undefined' || !kakao.maps) {{
+                        setTimeout(initMap, 100);
+                        return;
+                    }}
                     kakao.maps.load(function() {{
-                        var map = new kakao.maps.Map(document.getElementById('map'), {{
-                            center: new kakao.maps.LatLng({lat}, {lon}), level: 3
-                        }});
-                        {other_markers} {path_js} {current_marker_js}
+                        var container = document.getElementById('map');
+                        var options = {{
+                            center: new kakao.maps.LatLng({lat}, {lon}),
+                            level: 3
+                        }};
+                        var map = new kakao.maps.Map(container, options);
+                        
+                        {other_markers_js}
+                        {path_js}
+                        {blink_overlay_js}
                     }});
                 }}
-                init();
+                initMap();
             </script>
         </body>
         </html>
