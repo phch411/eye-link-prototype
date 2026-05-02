@@ -239,28 +239,50 @@ class EyeLinkApp:
 
     def render_kakao_map(self, df_students, logs_df):
         if df_students.empty: return
-        lat, lon = (logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']) if not logs_df.empty else (df_students.iloc[0]['lat'], df_students.iloc[0]['lon'])
+        
+        # 중심점 설정
+        if not logs_df.empty:
+            lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
+        else:
+            lat, lon = df_students.iloc[0]['lat'], df_students.iloc[0]['lon']
+
         kakao_key = st.secrets['kakao']['js_key']
         
+        # 일반 마커 (선택되지 않은 학생들)
         others_js = ""
         for _, r in df_students.iterrows():
             if str(r['id']) != str(st.session_state.get('selected_student_id')):
                 others_js += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']})}});"
 
+        # 동선 및 깜빡임 효과
         path_js, blink_js = "", ""
         if not logs_df.empty:
             for i, r in logs_df.iterrows():
                 opacity = max(0.2, 1.0 - (i * 0.05))
                 if i == 0:
-                    blink_js = f"var content = '<div class=\"pulse-marker\"></div>'; new kakao.maps.CustomOverlay({{position:new kakao.maps.LatLng({r['위도']},{r['경도']}), content:content, map:map, yAnchor:0.5}});"
+                    blink_js = f"""
+                    var content = '<div class="pulse-marker"></div>';
+                    var overlay = new kakao.maps.CustomOverlay({{
+                        position: new kakao.maps.LatLng({r['위도']}, {r['경도']}),
+                        content: content, yAnchor: 0.5
+                    }});
+                    overlay.setMap(map);
+                    """
                 else:
-                    path_js += f"new kakao.maps.Circle({{map:map, center:new kakao.maps.LatLng({r['위도']},{r['경도']}), radius:4, fillColor:'#FF0000', fillOpacity:{opacity}, strokeWeight:0}});"
+                    path_js += f"""
+                    new kakao.maps.Circle({{
+                        map: map, center: new kakao.maps.LatLng({r['위도']}, {r['경도']}),
+                        radius: 4, strokeWeight: 0, fillColor: '#FF0000', fillOpacity: {opacity}
+                    }});
+                    """
 
+        # [수정] autoload=false 설정 및 명시적 로드 처리
         map_html = f"""
         <html>
         <head>
+            <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
             <style>
-                #map {{ width: 100%; height: 650px; border-radius: 15px; }}
+                #map {{ width: 100%; height: 650px; border-radius: 15px; background-color: #f0f0f0; }}
                 .pulse-marker {{
                     width: 18px; height: 18px; background: #FF0000; border: 3px solid #FFF; border-radius: 50%;
                     box-shadow: 0 0 10px rgba(255,0,0,0.7); animation: pulse 1.5s infinite;
@@ -272,19 +294,34 @@ class EyeLinkApp:
                 }}
             </style>
         </head>
-        <body style="margin:0;"><div id="map"></div>
-            <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
+        <body style="margin:0;">
+            <div id="map"></div>
+            <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
             <script>
-                function init() {{
-                    if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
+                // 지도가 그려지지 않을 경우를 대비해 반복 확인
+                function loadMap() {{
+                    if (typeof kakao === 'undefined' || !kakao.maps) {{
+                        setTimeout(loadMap, 100);
+                        return;
+                    }}
+                    
                     kakao.maps.load(function() {{
-                        var map = new kakao.maps.Map(document.getElementById('map'), {{center:new kakao.maps.LatLng({lat},{lon}), level:3}});
-                        {others_js} {path_js} {blink_js}
+                        var container = document.getElementById('map');
+                        var options = {{
+                            center: new kakao.maps.LatLng({lat}, {lon}),
+                            level: 3
+                        }};
+                        var map = new kakao.maps.Map(container, options);
+                        
+                        {others_js}
+                        {path_js}
+                        {blink_js}
                     }});
                 }}
-                init();
+                loadMap();
             </script>
-        </body></html>
+        </body>
+        </html>
         """
         components.html(map_html, height=670)
 
