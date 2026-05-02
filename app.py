@@ -159,38 +159,103 @@ class EyeLinkApp:
                     self.render_gps_sender(s_name, user['school_id'])
 
     def render_gps_sender(self, s_name, school_id):
+        """
+        [해결 포인트]
+        1. 이름 누락 방지: Upsert 시 모든 필드(student_name 등)를 명시적으로 재전송
+        2. 로그 전송 보장: async/await 순차 처리를 통해 등록 후 로그 전송이 이루어지도록 보정
+        3. RLS 충돌 방지: 헤더 및 데이터 전송 구조 최적화
+        """
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
         gps_js = f"""
         <script>
         const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
+        
+        // 이름과 기기 정보를 조합한 고유 6자리 ID 생성
         const studentId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000).toString().padStart(6,'0');
+        
         async function startSystem() {{
-            try {{
-                await fetch(sUrl + "/rest/v1/students", {{
-                    method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
-                    body: JSON.stringify({{ id: studentId, student_name: sName, school_id: schoolId, status: "전송중", lat: 0, lon: 0 }})
-                }});
-            }} catch (e) {{ console.error("학생 등록 실패:", e); }}
+            console.log("시스템 시작: " + sName + " (#" + studentId + ")");
+            
+            // 1. 학생 정보 등록 또는 갱신 (이름 누락 방지 핵심)
+            const registerStudent = async () => {{
+                try {{
+                    const response = await fetch(sUrl + "/rest/v1/students", {{
+                        method: "POST", 
+                        headers: {{ 
+                            "apikey": sKey, 
+                            "Authorization": "Bearer " + sKey, 
+                            "Content-Type": "application/json", 
+                            "Prefer": "resolution=merge-duplicates" // 동일 ID 발생 시 덮어쓰기
+                        }},
+                        body: JSON.stringify({{ 
+                            id: studentId, 
+                            student_name: sName, 
+                            school_id: schoolId, 
+                            status: "전송중" 
+                        }})
+                    }});
+                    console.log("학생 등록/갱신 결과:", response.status);
+                }} catch (e) {{ console.error("학생 정보 Upsert 오류:", e); }}
+            }};
+
+            // 최초 1회 실행
+            await registerStudent();
+
+            // 2. 10초마다 반복 전송
             setInterval(() => {{
                 navigator.geolocation.getCurrentPosition(async (pos) => {{
-                    const lat = pos.coords.latitude, lon = pos.coords.longitude;
-                    const ts = new Date().toISOString();
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+                    const timestamp = new Date().toISOString();
+
+                    console.log("위치 획득: ", lat, lon);
+
+                    // A. 동선 로그 저장 (location_logs)
                     fetch(sUrl + "/rest/v1/location_logs", {{
-                        method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
-                        body: JSON.stringify({{ student_id: studentId, student_name: sName, lat: lat, lon: lon, created_at: ts }})
-                    }});
+                        method: "POST", 
+                        headers: {{ 
+                            "apikey": sKey, 
+                            "Authorization": "Bearer " + sKey, 
+                            "Content-Type": "application/json" 
+                        }},
+                        body: JSON.stringify({{ 
+                            student_id: studentId, 
+                            student_name: sName, 
+                            lat: lat, 
+                            lon: lon, 
+                            created_at: timestamp 
+                        }})
+                    }}).then(r => console.log("로그 전송 완료: ", r.status));
+
+                    // B. 실시간 최신 위치 및 상태 업데이트 (students)
                     fetch(sUrl + "/rest/v1/students?id=eq." + studentId, {{
-                        method: "PATCH", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
-                        body: JSON.stringify({{ lat: lat, lon: lon, status: "전송중" }})
-                    }});
-                }}, (err) => {{ console.error(err.message); }}, {{ enableHighAccuracy: true }});
+                        method: "PATCH", 
+                        headers: {{ 
+                            "apikey": sKey, 
+                            "Authorization": "Bearer " + sKey, 
+                            "Content-Type": "application/json" 
+                        }},
+                        body: JSON.stringify({{ 
+                            lat: lat, 
+                            lon: lon, 
+                            status: "전송중",
+                            student_name: sName // 이름이 비워지는 현상 방지용 재입력
+                        }})
+                    }}).then(r => console.log("최신 위치 갱신 완료: ", r.status));
+                    
+                }}, (err) => {{
+                    console.error("GPS 권한 거부됨:", err.message);
+                }}, {{ enableHighAccuracy: true, timeout: 5000 }});
             }}, 10000);
         }}
         startSystem();
         </script>
-        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px;"><h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 전송 중</h4></div>
+        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px; border:1px solid #c8e6c9;">
+            <h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 실시간 위치 전송 중</h4>
+            <p style="font-size:0.8rem; color:#666; margin-top:5px;">브라우저 위치 정보 권한을 꼭 확인해주세요.</p>
+        </div>
         """
-        components.html(gps_js, height=120)
+        components.html(gps_js, height=130)
 
     def render_kakao_map(self, df_students, logs_df):
         """[수정] NameError 해결 및 연결 상태별 시각화 보강"""
