@@ -167,41 +167,52 @@ class EyeLinkApp:
                 if st.session_state['tracking_active']:
                     self.render_gps_sender(s_name, user['school_id'])
 
-def render_kakao_map(self, df_students, logs_df):
-        """[수정] 기본 위치 제거: 연결 시 깜빡임, 미연결 시 고정 표시"""
-        if df_students.empty: return
-        
-        # 선택된 학생 정보 추출
-        selected_id = st.session_state.get('selected_student_id')
-        current_student = df_students[df_students['id'].astype(str) == str(selected_id)] if selected_id else pd.DataFrame()
-        
-        # 1. 중심점 및 표시 좌표 설정 (기본 위치 로직 삭제)
-        # 최신 로그가 있으면 그 위치, 없으면 students 테이블의 마지막 저장 위치 사용
-        if not logs_df.empty:
-            lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
-        elif not current_student.empty and current_student.iloc[0]['lat'] != 0:
-            lat, lon = current_student.iloc[0]['lat'], current_student.iloc[0]['lon']
-        else:
-            # 데이터가 아예 없는 학생이면 지도를 그리지 않거나 알림만 표시
-            st.warning("해당 학생의 위치 기록이 없습니다.")
+    def render_kakao_map(self, df_students, logs_df):
+        """
+        [수정사항]
+        1. AttributeError 방지를 위한 변수 체크 강화
+        2. 기본 위치(임의 좌표) 로직 완전 제거
+        3. 실시간 연결(logs_df 있음) 시에만 빨간색 원 깜빡임
+        4. 미연결(logs_df 없음) 시 마지막 위치에 깜빡임 없이 고정 표시
+        """
+        if df_students.empty:
             return
+        
+        # 현재 선택된 학생 ID 확인
+        selected_id = st.session_state.get('selected_student_id')
+        
+        # 1. 표시할 좌표 결정 (기본 위치 없음)
+        if not logs_df.empty:
+            # 실시간 로그가 있는 경우 (최신 위치)
+            lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
+            is_active = True
+        else:
+            # 실시간 로그가 없는 경우 -> students 테이블에서 마지막 저장 위치 확인
+            current_student = df_students[df_students['id'].astype(str) == str(selected_id)] if selected_id else pd.DataFrame()
+            
+            if not current_student.empty and current_student.iloc[0]['lat'] != 0:
+                lat, lon = current_student.iloc[0]['lat'], current_student.iloc[0]['lon']
+                is_active = False
+            else:
+                # 위치 기록이 아예 없는 학생이면 안내 후 종료
+                st.info("선택한 학생의 위치 기록이 아직 없습니다.")
+                return
 
         kakao_key = st.secrets['kakao']['js_key']
         
-        # 2. 모든 학생 마커 표시 (다른 학생들)
-        all_markers_js = ""
+        # 2. 다른 학생들 마커 표시
+        others_js = ""
         for _, r in df_students.iterrows():
             if r['lat'] != 0 and str(r['id']) != str(selected_id):
-                all_markers_js += f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({r['lat']}, {r['lon']}), map: map, title: '{r['student_name']}' }});"
+                others_js += f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({r['lat']}, {r['lon']}), map: map, title: '{r['student_name']}' }});"
 
-        # 3. [핵심] 연결 상태에 따른 선택 학생 표시 로직
-        # logs_df가 비어있지 않고 최신 데이터가 있으면 '깜빡임', 아니면 '고정'
-        blink_js = ""
-        if not logs_df.empty:
-            # 실시간 전송 중인 경우: 깜빡이는 원형 커스텀 오버레이
-            blink_js = f"""
+        # 3. 선택된 학생 표시 로직 (연결 상태에 따른 차등)
+        target_js = ""
+        if is_active:
+            # [연결됨] 빨간색 깜빡이는 원형 커스텀 오버레이
+            target_js = f"""
             var content = '<div class="pulse-marker"></div>';
-            new kakao.maps.CustomOverlay({{
+            var overlay = new kakao.maps.CustomOverlay({{
                 position: new kakao.maps.LatLng({lat}, {lon}),
                 content: content,
                 map: map,
@@ -209,12 +220,12 @@ def render_kakao_map(self, df_students, logs_df):
             }});
             """
         else:
-            # 연결되지 않은 경우: 깜빡임 없는 일반 마커 또는 고정된 원
-            blink_js = f"""
+            # [미연결] 깜빡임 없는 일반 마커 (마지막 위치)
+            target_js = f"""
             new kakao.maps.Marker({{
                 position: new kakao.maps.LatLng({lat}, {lon}),
                 map: map,
-                title: '{current_student.iloc[0]['student_name']} (마지막 위치)'
+                title: '마지막 위치'
             }});
             """
 
@@ -225,13 +236,10 @@ def render_kakao_map(self, df_students, logs_df):
             <style>
                 #map {{ width: 100%; height: 600px; border-radius: 15px; background: #eee; }}
                 .pulse-marker {{
-                    width: 20px;
-                    height: 20px;
-                    background: #FF0000;
-                    border: 3px solid #FFFFFF;
-                    border-radius: 50%;
+                    width: 20px; height: 20px; background: #FF0000;
+                    border: 3px solid #FFFFFF; border-radius: 50%;
                     box-shadow: 0 0 12px rgba(255, 0, 0, 0.8);
-                    animation: pulse-ring 1.5s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+                    animation: pulse-ring 1.5s infinite;
                 }}
                 @keyframes pulse-ring {{
                     0% {{ transform: scale(0.8); box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }}
@@ -252,8 +260,8 @@ def render_kakao_map(self, df_students, logs_df):
                         var container = document.getElementById('map');
                         var options = {{ center: new kakao.maps.LatLng({lat}, {lon}), level: 3 }};
                         var map = new kakao.maps.Map(container, options);
-                        {all_markers_js}
-                        {blink_js}
+                        {others_js}
+                        {target_js}
                     }});
                 }}
                 initMap();
