@@ -32,14 +32,14 @@ class EyeLinkDB:
         except: return []
 
     def authenticate(self, u_id, pw):
-        """user 테이블에서 인증"""
         try:
+            # user 테이블에서 school_id와 password로 인증
             q = self.client.table("user").select("*").eq("school_id", u_id).eq("password", pw).execute()
             return q.data
         except: return []
 
     def register(self, u_id, pw, name, addr):
-        """회원가입 실행 (user 테이블)"""
+        """회원가입 실행"""
         try:
             check = self.client.table("user").select("school_id").eq("school_id", u_id).execute()
             if len(check.data) > 0: return False, "이미 존재하는 아이디입니다."
@@ -49,14 +49,14 @@ class EyeLinkDB:
         except Exception as e: return False, f"DB 오류: {str(e)}"
 
     def fetch_students(self, school_id):
-        """students 테이블에서 목록 가져오기"""
+        """학생 목록 가져오기"""
         try:
             q = self.client.table("students").select("*").eq("school_id", school_id).execute()
             return pd.DataFrame(q.data)
         except: return pd.DataFrame()
 
     def fetch_location_logs(self, student_id):
-        """location_logs 테이블에서 특정 학생의 10초 단위 로그 가져오기"""
+        """특정 학생의 10초 단위 위치 로그 가져오기"""
         try:
             res = self.client.table("location_logs")\
                 .select("created_at, lat, lon")\
@@ -78,6 +78,7 @@ class EyeLinkApp:
         if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
         if 'show_signup' not in st.session_state: st.session_state['show_signup'] = False
         if 'user_info' not in st.session_state: st.session_state['user_info'] = None
+        # 학생 선택 상태 유지를 위한 세션 변수
         if 'selected_student_id' not in st.session_state: st.session_state['selected_student_id'] = None
         if 'selected_student_name' not in st.session_state: st.session_state['selected_student_name'] = None
 
@@ -93,15 +94,15 @@ class EyeLinkApp:
             st.title("🛡️ Eye-Link")
             st.markdown("### **아이들의 발걸음이 언제나 안녕하기를.**")
             with st.container(border=True):
-                u_id = st.text_input("학교 아이디 (school_id)", placeholder="아이디를 입력하세요")
-                u_pw = st.text_input("비밀번호 (password)", type="password")
+                u_id = st.text_input("아이디 (ID)", placeholder="학교 아이디를 입력하세요")
+                u_pw = st.text_input("비밀번호", type="password", placeholder="비밀번호를 입력하세요")
                 if st.button("함께하기", use_container_width=True):
                     user = self.db.authenticate(u_id, u_pw)
                     if user:
                         st.session_state['logged_in'] = True
                         st.session_state['user_info'] = user[0]
                         st.rerun()
-                    else: st.error("정보를 다시 확인해 주세요.")
+                    else: st.error("아이디 또는 비밀번호를 다시 확인해 주세요.")
                 st.write("---")
                 if st.button("우리 학교 등록하기", use_container_width=True):
                     st.session_state['show_signup'] = True
@@ -112,7 +113,7 @@ class EyeLinkApp:
         with col:
             st.title("📝 학교 가입")
             with st.container(border=True):
-                s_input = st.text_input("1. 학교명 검색")
+                s_input = st.text_input("1. 학교명 검색 (2글자 이상 입력)")
                 selected_school = None
                 if len(s_input) >= 2:
                     school_list = self.db.get_school_list(s_input)
@@ -122,25 +123,31 @@ class EyeLinkApp:
                         if choice != "선택하세요": selected_school = opts[choice]
                 
                 if selected_school:
-                    u_id = st.text_input("3. 사용할 ID")
-                    pw = st.text_input("4. 비밀번호", type="password")
+                    st.divider()
+                    st.info(f"📍 선택된 학교: {selected_school['SCHUL_NM']}")
+                    u_id = st.text_input("3. 사용할 학교 관리자 ID")
+                    pw = st.text_input("4. 비밀번호 설정", type="password")
                     is_v, msg = self.validate_pw(pw)
                     if pw:
                         if is_v: st.success(msg)
                         else: st.error(msg)
+                    pw_c = st.text_input("5. 비밀번호 확인", type="password")
                     if st.button("가입 완료", use_container_width=True):
-                        if u_id and is_v:
+                        if u_id and is_v and pw == pw_c:
                             ok, res = self.db.register(u_id, pw, selected_school['SCHUL_NM'], selected_school['ORG_RDNMA'])
                             if ok:
                                 st.success(res)
                                 st.session_state['show_signup'] = False
                                 st.rerun()
-            if st.button("돌아가기"):
+                            else: st.error(res)
+            if st.button("이전으로 돌아가기"):
                 st.session_state['show_signup'] = False
                 st.rerun()
 
-    def show_dashboard(self):
+def show_dashboard(self):
+        """실시간 모니터링 대시보드"""
         user = st.session_state['user_info']
+        
         st.sidebar.title(f"🏫 {user['school_name']}")
         menu = st.sidebar.radio("관리 메뉴", ["실시간 학생 모니터링", "학생별 상황", "사전 위험구간 설정"])
         if st.sidebar.button("로그아웃"):
@@ -153,74 +160,106 @@ class EyeLinkApp:
             st.title("👁️ 실시간 학생 모니터링")
             if not df_students.empty:
                 col_list, col_map = st.columns([1, 3])
+                
+                # 1. 왼쪽 학생 명단
                 with col_list:
                     st.subheader("👤 명단")
                     for _, row in df_students.iterrows():
-                        status_icon = "🟢" if row.get('status') == "정상" else "🔴"
+                        status_icon = "🟢" if row['status'] == "정상" else "🔴"
                         if st.button(f"{status_icon} {row['student_name']}", key=f"btn_{row['id']}", use_container_width=True):
                             st.session_state['selected_student_id'] = row['id']
                             st.session_state['selected_student_name'] = row['student_name']
                             st.rerun()
                 
+                # 2. 오른쪽 지도 및 동선 표시 로직
                 with col_map:
+                    # 학생이 선택된 경우 해당 학생의 로그를 가져와서 전달
                     logs_df = pd.DataFrame()
                     if st.session_state['selected_student_id']:
                         logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
-                        st.info(f"📍 {st.session_state['selected_student_name']} 학생의 동선을 표시 중입니다.")
+                        st.info(f"📍 {st.session_state['selected_student_name']} 학생의 이동 동선을 표시 중입니다.")
+                    
                     self.render_kakao_map(df_students, logs_df)
                 
+                # 3. 하단 로그 데이터 테이블
                 if not logs_df.empty:
                     st.divider()
                     st.subheader(f"📊 {st.session_state['selected_student_name']} 학생 상세 기록")
                     st.dataframe(logs_df, use_container_width=True, height=250)
             else:
-                st.info("데이터가 없습니다. GPS 기기를 확인해 주세요.")
+                st.info("데이터가 없습니다. GPS 기기를 켜주세요.")
 
     def render_kakao_map(self, df_students, logs_df=pd.DataFrame()):
-        if df_students.empty: return
-        
+        """지도 렌더링 (전체 학생 위치 + 선택 학생 이동 동선)"""
+        if df_students.empty:
+            return
+
+        # 지도 중심 (선택된 학생이 있다면 그 학생의 최신 위치, 없다면 첫 번째 학생)
         if not logs_df.empty:
             lat, lon = logs_df.iloc[0]['위도(Lat)'], logs_df.iloc[0]['경도(Lon)']
         else:
             lat, lon = df_students.iloc[0]['lat'], df_students.iloc[0]['lon']
 
         kakao_key = st.secrets['kakao']['js_key']
-        markers_js = ""
+        
+        # [기능] 전체 학생 현재 위치 마커
+        all_markers_js = ""
         for _, r in df_students.iterrows():
-            markers_js += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']}), title:'{r['student_name']}'}});"
+            all_markers_js += f"""
+                new kakao.maps.Marker({{
+                    map: map,
+                    position: new kakao.maps.LatLng({r['lat']}, {r['lon']}),
+                    title: '{r['student_name']} (현재)'
+                }});
+            """
 
-        path_js = ""
+        # [기능] 선택된 학생의 이동 동선 (작은 점 마커들)
+        path_markers_js = ""
         if not logs_df.empty:
             for _, r in logs_df.iterrows():
-                path_js += f"""
-                new kakao.maps.Circle({{
-                    map: map,
-                    center: new kakao.maps.LatLng({r['위도(Lat)']}, {r['경도(Lon)']}),
-                    radius: 3, strokeWeight: 1, strokeColor: '#FF0000', strokeOpacity: 0.8,
-                    fillColor: '#FF0000', fillOpacity: 0.5
-                }});
+                path_markers_js += f"""
+                    new kakao.maps.Circle({{
+                        map: map,
+                        center: new kakao.maps.LatLng({r['위도(Lat)']}, {r['경도(Lon)']}),
+                        radius: 2, 
+                        strokeWeight: 1,
+                        strokeColor: '#FF0000',
+                        strokeOpacity: 0.8,
+                        fillColor: '#FF0000',
+                        fillOpacity: 0.5
+                    }});
                 """
 
         map_html = f"""
         <html>
         <head><meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests"></head>
-        <body style="margin:0;"><div id="map" style="width:100%;height:650px;border-radius:15px;"></div>
-        <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
-        <script>
-            function init() {{
-                if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
-                kakao.maps.load(function() {{
-                    var map = new kakao.maps.Map(document.getElementById('map'), {{center: new kakao.maps.LatLng({lat}, {lon}), level: 3}});
-                    {markers_js} {path_js}
-                }});
-            }}
-            init();
-        </script></body></html>
+        <body style="margin:0;">
+            <div id="map" style="width:100%;height:650px;border-radius:15px;"></div>
+            <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
+            <script>
+                function init() {{
+                    if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
+                    kakao.maps.load(function() {{
+                        var map = new kakao.maps.Map(document.getElementById('map'), {{
+                            center: new kakao.maps.LatLng({lat}, {lon}), level: 3
+                        }});
+                        {all_markers_js}
+                        {path_markers_js}
+                    }});
+                }}
+                init();
+            </script>
+        </body>
+        </html>
         """
         components.html(map_html, height=670)
 
+# --- 3. 실행부 ---
 if __name__ == "__main__":
     app = EyeLinkApp()
-    if st.session_state['logged_in']: app.show_dashboard()
-    elif st.session_state['show_signup']: app.show_signup_page()
-    else: app.show_login_page()
+    if st.session_state['logged_in']:
+        app.show_dashboard()
+    elif st.session_state['show_signup']:
+        app.show_signup_page()
+    else:
+        app.show_login_page()
