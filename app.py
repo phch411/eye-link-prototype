@@ -21,6 +21,7 @@ class EyeLinkDB:
             st.error("설정 오류: Streamlit Secrets를 확인해주세요.")
 
     def get_school_list(self, keyword):
+        """나이스 API 학교 검색"""
         url = "https://open.neis.go.kr/hub/schoolInfo"
         params = {"KEY": self.neis_key, "Type": "json", "pIndex": 1, "pSize": 10, "SCHUL_NM": keyword}
         try:
@@ -32,12 +33,13 @@ class EyeLinkDB:
 
     def authenticate(self, u_id, pw):
         try:
-            # Table 이름 'users' -> 이미지 확인 결과 'user'인 경우 수정 필요 (여기서는 기존 코드 유지)
+            # user 테이블에서 school_id와 password로 인증
             q = self.client.table("user").select("*").eq("school_id", u_id).eq("password", pw).execute()
             return q.data
         except: return []
 
     def register(self, u_id, pw, name, addr):
+        """회원가입 실행"""
         try:
             check = self.client.table("user").select("school_id").eq("school_id", u_id).execute()
             if len(check.data) > 0: return False, "이미 존재하는 아이디입니다."
@@ -47,13 +49,14 @@ class EyeLinkDB:
         except Exception as e: return False, f"DB 오류: {str(e)}"
 
     def fetch_students(self, school_id):
+        """학생 목록 가져오기"""
         try:
-            res = self.client.table("students").select("*").eq("school_id", school_id).execute()
-            return pd.DataFrame(res.data)
+            q = self.client.table("students").select("*").eq("school_id", school_id).execute()
+            return pd.DataFrame(q.data)
         except: return pd.DataFrame()
 
     def fetch_location_logs(self, student_id):
-        """학생의 10초 단위 로그를 수파베이스에서 가져옴"""
+        """특정 학생의 10초 단위 위치 로그 가져오기"""
         try:
             res = self.client.table("location_logs")\
                 .select("created_at, lat, lon")\
@@ -75,7 +78,7 @@ class EyeLinkApp:
         if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
         if 'show_signup' not in st.session_state: st.session_state['show_signup'] = False
         if 'user_info' not in st.session_state: st.session_state['user_info'] = None
-        # 학생 선택 상태 추가
+        # 학생 선택 상태 유지를 위한 세션 변수
         if 'selected_student_id' not in st.session_state: st.session_state['selected_student_id'] = None
         if 'selected_student_name' not in st.session_state: st.session_state['selected_student_name'] = None
 
@@ -91,8 +94,8 @@ class EyeLinkApp:
             st.title("🛡️ Eye-Link")
             st.markdown("### **아이들의 발걸음이 언제나 안녕하기를.**")
             with st.container(border=True):
-                u_id = st.text_input("학교 아이디 (school_id)", placeholder="아이디를 입력하세요")
-                u_pw = st.text_input("비밀번호 (password)", type="password", placeholder="비밀번호를 입력하세요")
+                u_id = st.text_input("아이디 (ID)", placeholder="학교 아이디를 입력하세요")
+                u_pw = st.text_input("비밀번호", type="password", placeholder="비밀번호를 입력하세요")
                 if st.button("함께하기", use_container_width=True):
                     user = self.db.authenticate(u_id, u_pw)
                     if user:
@@ -120,6 +123,7 @@ class EyeLinkApp:
                         if choice != "선택하세요": selected_school = opts[choice]
                 
                 if selected_school:
+                    st.divider()
                     st.info(f"📍 선택된 학교: {selected_school['SCHUL_NM']}")
                     u_id = st.text_input("3. 사용할 학교 관리자 ID")
                     pw = st.text_input("4. 비밀번호 설정", type="password")
@@ -143,45 +147,51 @@ class EyeLinkApp:
     def show_dashboard(self):
         """실시간 모니터링 대시보드"""
         user = st.session_state['user_info']
+        
+        # [요청사항] 사이드바 유지
         st.sidebar.title(f"🏫 {user['school_name']}")
+        menu = st.sidebar.radio("관리 메뉴", ["실시간 학생 모니터링", "학생별 상황", "사전 위험구간 설정"])
         if st.sidebar.button("로그아웃"):
             st.session_state['logged_in'] = False
             st.rerun()
 
         df = self.db.fetch_students(user['school_id'])
 
-        st.title("👁️ 실시간 학생 모니터링")
-        
-        # 메인 레이아웃: 왼쪽(학생 명단 버튼) / 오른쪽(지도)
-        col_list, col_map = st.columns([1, 3])
-        
-        with col_list:
-            st.subheader("👤 학생 명단")
+        if menu == "실시간 학생 모니터링":
+            st.title("👁️ 실시간 학생 모니터링")
             if not df.empty:
-                for _, row in df.iterrows():
-                    # [이미지 반영] status 값에 따른 아이콘 (정상=🟢, 나머지=🔴)
-                    status_icon = "🟢" if row.get('status') == "정상" else "🔴"
-                    
-                    # [요청사항] 학생 이름을 클릭 가능한 버튼으로 생성
-                    if st.button(f"{status_icon} {row['student_name']}", key=f"btn_{row['id']}", use_container_width=True):
-                        st.session_state['selected_student_id'] = row['id']
-                        st.session_state['selected_student_name'] = row['student_name']
-                        st.rerun()
+                col_list, col_map = st.columns([1, 3])
+                with col_list:
+                    st.subheader("👤 명단")
+                    # [이미지 및 요청사항 반영] 학생 이름을 클릭 가능한 버튼으로 구성
+                    for _, row in df.iterrows():
+                        status_icon = "🟢" if row['status'] == "정상" else "🔴"
+                        if st.button(f"{status_icon} {row['student_name']}", key=f"btn_{row['id']}", use_container_width=True):
+                            st.session_state['selected_student_id'] = row['id']
+                            st.session_state['selected_student_name'] = row['student_name']
+                            st.rerun()
+                with col_map:
+                    self.render_kakao_map(df)
+                
+                # 학생 클릭 시 하단에 로그 기록 출력
+                if st.session_state['selected_student_id']:
+                    st.divider()
+                    st.subheader(f"📊 {st.session_state['selected_student_name']} 학생 상세 이동 로그 (10초 단위)")
+                    logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
+                    if not logs_df.empty:
+                        st.dataframe(logs_df, use_container_width=True, height=300)
+                    else:
+                        st.warning("기록된 위치 로그가 없습니다.")
             else:
-                st.info("등록된 학생이 없습니다.")
-
-        with col_map:
-            self.render_kakao_map(df)
-
-        # 학생 클릭 시 하단에 로그 기록 출력
-        if st.session_state['selected_student_id']:
-            st.divider()
-            st.subheader(f"📊 {st.session_state['selected_student_name']} 학생 상세 이동 로그 (10초 단위)")
-            logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
-            if not logs_df.empty:
-                st.dataframe(logs_df, use_container_width=True, height=300)
-            else:
-                st.warning("기록된 위치 로그가 없습니다.")
+                st.info("데이터가 없습니다. GPS 기기를 켜주세요.")
+        
+        elif menu == "학생별 상황":
+            st.title("📋 학생별 상황 관리")
+            st.write("준비 중인 기능입니다.")
+            
+        elif menu == "사전 위험구간 설정":
+            st.title("⚠️ 위험구간 설정")
+            st.write("준비 중인 기능입니다.")
 
     def render_kakao_map(self, df):
         if df.empty:
@@ -196,7 +206,7 @@ class EyeLinkApp:
         map_html = f"""
         <html>
         <head><meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests"></head>
-        <body style="margin:0;"><div id="map" style="width:100%;height:500px;border-radius:15px;"></div>
+        <body style="margin:0;"><div id="map" style="width:100%;height:600px;border-radius:15px;"></div>
         <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
         <script>
             function init() {{
@@ -209,7 +219,7 @@ class EyeLinkApp:
             init();
         </script></body></html>
         """
-        components.html(map_html, height=520)
+        components.html(map_html, height=620)
 
 # --- 3. 실행부 ---
 if __name__ == "__main__":
