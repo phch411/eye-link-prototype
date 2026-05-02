@@ -144,115 +144,82 @@ class EyeLinkApp:
                 st.session_state['show_signup'] = False
                 st.rerun()
 
-def show_dashboard(self):
+    def show_dashboard(self):
         """실시간 모니터링 대시보드"""
         user = st.session_state['user_info']
         
+        # [요청사항] 사이드바 유지
         st.sidebar.title(f"🏫 {user['school_name']}")
         menu = st.sidebar.radio("관리 메뉴", ["실시간 학생 모니터링", "학생별 상황", "사전 위험구간 설정"])
         if st.sidebar.button("로그아웃"):
             st.session_state['logged_in'] = False
             st.rerun()
 
-        df_students = self.db.fetch_students(user['school_id'])
+        df = self.db.fetch_students(user['school_id'])
 
         if menu == "실시간 학생 모니터링":
             st.title("👁️ 실시간 학생 모니터링")
-            if not df_students.empty:
+            if not df.empty:
                 col_list, col_map = st.columns([1, 3])
-                
-                # 1. 왼쪽 학생 명단
                 with col_list:
                     st.subheader("👤 명단")
-                    for _, row in df_students.iterrows():
+                    # [이미지 및 요청사항 반영] 학생 이름을 클릭 가능한 버튼으로 구성
+                    for _, row in df.iterrows():
                         status_icon = "🟢" if row['status'] == "정상" else "🔴"
                         if st.button(f"{status_icon} {row['student_name']}", key=f"btn_{row['id']}", use_container_width=True):
                             st.session_state['selected_student_id'] = row['id']
                             st.session_state['selected_student_name'] = row['student_name']
                             st.rerun()
-                
-                # 2. 오른쪽 지도 및 동선 표시 로직
                 with col_map:
-                    # 학생이 선택된 경우 해당 학생의 로그를 가져와서 전달
-                    logs_df = pd.DataFrame()
-                    if st.session_state['selected_student_id']:
-                        logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
-                        st.info(f"📍 {st.session_state['selected_student_name']} 학생의 이동 동선을 표시 중입니다.")
-                    
-                    self.render_kakao_map(df_students, logs_df)
+                    self.render_kakao_map(df)
                 
-                # 3. 하단 로그 데이터 테이블
-                if not logs_df.empty:
+                # 학생 클릭 시 하단에 로그 기록 출력
+                if st.session_state['selected_student_id']:
                     st.divider()
-                    st.subheader(f"📊 {st.session_state['selected_student_name']} 학생 상세 기록")
-                    st.dataframe(logs_df, use_container_width=True, height=250)
+                    st.subheader(f"📊 {st.session_state['selected_student_name']} 학생 상세 이동 로그 (10초 단위)")
+                    logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
+                    if not logs_df.empty:
+                        st.dataframe(logs_df, use_container_width=True, height=300)
+                    else:
+                        st.warning("기록된 위치 로그가 없습니다.")
             else:
                 st.info("데이터가 없습니다. GPS 기기를 켜주세요.")
-
-    def render_kakao_map(self, df_students, logs_df=pd.DataFrame()):
-        """지도 렌더링 (전체 학생 위치 + 선택 학생 이동 동선)"""
-        if df_students.empty:
-            return
-
-        # 지도 중심 (선택된 학생이 있다면 그 학생의 최신 위치, 없다면 첫 번째 학생)
-        if not logs_df.empty:
-            lat, lon = logs_df.iloc[0]['위도(Lat)'], logs_df.iloc[0]['경도(Lon)']
-        else:
-            lat, lon = df_students.iloc[0]['lat'], df_students.iloc[0]['lon']
-
-        kakao_key = st.secrets['kakao']['js_key']
         
-        # [기능] 전체 학생 현재 위치 마커
-        all_markers_js = ""
-        for _, r in df_students.iterrows():
-            all_markers_js += f"""
-                new kakao.maps.Marker({{
-                    map: map,
-                    position: new kakao.maps.LatLng({r['lat']}, {r['lon']}),
-                    title: '{r['student_name']} (현재)'
-                }});
-            """
+        elif menu == "학생별 상황":
+            st.title("📋 학생별 상황 관리")
+            st.write("준비 중인 기능입니다.")
+            
+        elif menu == "사전 위험구간 설정":
+            st.title("⚠️ 위험구간 설정")
+            st.write("준비 중인 기능입니다.")
 
-        # [기능] 선택된 학생의 이동 동선 (작은 점 마커들)
-        path_markers_js = ""
-        if not logs_df.empty:
-            for _, r in logs_df.iterrows():
-                path_markers_js += f"""
-                    new kakao.maps.Circle({{
-                        map: map,
-                        center: new kakao.maps.LatLng({r['위도(Lat)']}, {r['경도(Lon)']}),
-                        radius: 2, 
-                        strokeWeight: 1,
-                        strokeColor: '#FF0000',
-                        strokeOpacity: 0.8,
-                        fillColor: '#FF0000',
-                        fillOpacity: 0.5
-                    }});
-                """
+    def render_kakao_map(self, df):
+        if df.empty:
+            st.info("표시할 위치 데이터가 없습니다.")
+            return
+        lat, lon = df.iloc[0]['lat'], df.iloc[0]['lon']
+        kakao_key = st.secrets['kakao']['js_key']
+        markers_js = ""
+        for _, r in df.iterrows():
+            markers_js += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']}), title:'{r['student_name']}'}});"
 
         map_html = f"""
         <html>
         <head><meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests"></head>
-        <body style="margin:0;">
-            <div id="map" style="width:100%;height:650px;border-radius:15px;"></div>
-            <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
-            <script>
-                function init() {{
-                    if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
-                    kakao.maps.load(function() {{
-                        var map = new kakao.maps.Map(document.getElementById('map'), {{
-                            center: new kakao.maps.LatLng({lat}, {lon}), level: 3
-                        }});
-                        {all_markers_js}
-                        {path_markers_js}
-                    }});
-                }}
-                init();
-            </script>
-        </body>
-        </html>
+        <body style="margin:0;"><div id="map" style="width:100%;height:600px;border-radius:15px;"></div>
+        <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
+        <script>
+            function init() {{
+                if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
+                kakao.maps.load(function() {{
+                    var map = new kakao.maps.Map(document.getElementById('map'), {{center: new kakao.maps.LatLng({lat}, {lon}), level: 3}});
+                    {markers_js}
+                }});
+            }}
+            init();
+        </script></body></html>
         """
-        components.html(map_html, height=670)
+        components.html(map_html, height=620)
 
 # --- 3. 실행부 ---
 if __name__ == "__main__":
