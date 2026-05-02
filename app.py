@@ -145,38 +145,43 @@ class EyeLinkApp:
     def render_kakao_map(self, df_students, logs_df=pd.DataFrame()):
         if df_students.empty: return
         
+        # 중심점 설정: 선택 학생의 최신 위치 우선
         if not logs_df.empty:
-            lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
+            lat, lon = logs_df.iloc[0]['위도(Lat)'], logs_df.iloc[0]['경도(Lon)']
         else:
             lat, lon = df_students.iloc[0]['lat'], df_students.iloc[0]['lon']
 
         kakao_key = st.secrets['kakao']['js_key']
         
-        # 1. 일반 마커 (선택되지 않은 학생)
+        # 1. 전체 학생 마커 (선택되지 않은 학생들)
         markers_js = ""
         for _, r in df_students.iterrows():
             if str(r['id']) != str(st.session_state.get('selected_student_id')):
                 markers_js += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']}), title:'{r['student_name']}'}});"
 
-        # 2. 동선 및 깜빡임 효과
+        # 2. 선택된 학생의 동선 및 빨간색 깜빡이는 원(현재 위치)
         path_js = ""
         blink_js = ""
         if not logs_df.empty:
             for i, r in logs_df.iterrows():
-                opacity = max(0.2, 1.0 - (i * 0.05))
-                if i == 0: # 최신 위치 깜빡임
+                # 인덱스(i)가 0일수록 최신 데이터
+                opacity = max(0.2, 1.0 - (i * 0.05)) 
+                if i == 0:
+                    # [수정] 최신 위치를 빨간색 깜빡이는 원형 커스텀 오버레이로 변경
                     blink_js = f"""
                     var content = '<div class="pulse-marker"></div>';
                     var overlay = new kakao.maps.CustomOverlay({{
-                        position: new kakao.maps.LatLng({r['위도']}, {r['경도']}),
-                        content: content, yAnchor: 0.5
+                        position: new kakao.maps.LatLng({r['위도(Lat)']}, {r['경도(Lon)']}),
+                        content: content,
+                        yAnchor: 0.5
                     }});
                     overlay.setMap(map);
                     """
-                else: # 과거 경로
+                else:
                     path_js += f"""
                     new kakao.maps.Circle({{
-                        map: map, center: new kakao.maps.LatLng({r['위도']}, {r['경도']}),
+                        map: map,
+                        center: new kakao.maps.LatLng({r['위도(Lat)']}, {r['경도(Lon)']}),
                         radius: 4, strokeWeight: 0, fillColor: '#FF0000', fillOpacity: {opacity}
                     }});
                     """
@@ -187,16 +192,20 @@ class EyeLinkApp:
             <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
             <style>
                 #map {{ width: 100%; height: 650px; border-radius: 15px; }}
+                /* 빨간색 깜빡이는 원형 스타일 */
                 .pulse-marker {{
-                    width: 16px; height: 16px; background-color: #FF0000;
-                    border: 3px solid #FFFFFF; border-radius: 50%;
-                    box-shadow: 0 0 0 rgba(255, 0, 0, 0.4);
+                    width: 18px;
+                    height: 18px;
+                    background-color: #FF0000;
+                    border: 3px solid #FFFFFF;
+                    border-radius: 50%;
+                    box-shadow: 0 0 10px rgba(255, 0, 0, 0.7);
                     animation: pulse 1.5s infinite;
                 }}
                 @keyframes pulse {{
-                    0% {{ box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }}
-                    70% {{ box-shadow: 0 0 0 15px rgba(255, 0, 0, 0); }}
-                    100% {{ box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }}
+                    0% {{ box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); transform: scale(0.95); }}
+                    70% {{ box-shadow: 0 0 0 15px rgba(255, 0, 0, 0); transform: scale(1.1); }}
+                    100% {{ box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); transform: scale(0.95); }}
                 }}
             </style>
         </head>
@@ -207,8 +216,13 @@ class EyeLinkApp:
                 function init() {{
                     if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
                     kakao.maps.load(function() {{
-                        var map = new kakao.maps.Map(document.getElementById('map'), {{center: new kakao.maps.LatLng({lat}, {lon}), level: 3}});
-                        {markers_js} {path_js} {blink_js}
+                        var map = new kakao.maps.Map(document.getElementById('map'), {{
+                            center: new kakao.maps.LatLng({lat}, {lon}), 
+                            level: 3
+                        }});
+                        {markers_js} 
+                        {path_js} 
+                        {blink_js}
                     }});
                 }}
                 init();
