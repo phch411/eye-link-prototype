@@ -168,14 +168,26 @@ class EyeLinkApp:
                 st.info("데이터가 없습니다. GPS 기기를 켜주세요.")
 
     def render_kakao_map(self, df):
+        # 데이터가 없을 경우 에러 방지
+        if df.empty:
+            st.warning("표시할 학생 위치 데이터가 없습니다.")
+            return
+
         lat, lon = df.iloc[0]['lat'], df.iloc[0]['lon']
         markers = ""
         for _, r in df.iterrows():
             markers += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']}), title:'{r['student_name']}'}});"
 
+        # secrets 키가 있는지 한 번 더 확인
+        try:
+            kakao_key = st.secrets['kakao']['js_key']
+        except KeyError:
+            st.error("카카오 API 키가 설정되지 않았습니다. Secrets를 확인해주세요.")
+            return
+
         map_html = f"""
         <div id="map" style="width:100%;height:500px;border-radius:15px;"></div>
-        <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey={st.secrets['kakao']['js_key']}"></script>
+        <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}"></script>
         <script>
             var container = document.getElementById('map');
             var options = {{ center: new kakao.maps.LatLng({lat}, {lon}), level: 3 }};
