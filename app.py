@@ -21,7 +21,6 @@ class EyeLinkDB:
             st.error("설정 오류: Streamlit Secrets를 확인해주세요.")
 
     def authenticate(self, u_id, pw):
-        """[해결] users 테이블에서 공백 제거 후 인증"""
         try:
             res = self.client.table("users").select("*").eq("school_id", u_id.strip()).execute()
             if res.data:
@@ -50,14 +49,12 @@ class EyeLinkDB:
         except: return False, "DB 오류"
 
     def fetch_students(self, school_id):
-        """학생 목록과 최신 상태 정보를 가져옴"""
         try:
             q = self.client.table("students").select("*").eq("school_id", school_id).order("student_name").execute()
             return pd.DataFrame(q.data)
         except: return pd.DataFrame()
 
     def fetch_location_logs(self, student_id):
-        """특정 학생의 최신 동선 로그 가져오기"""
         try:
             res = self.client.table("location_logs")\
                 .select("created_at, lat, lon")\
@@ -124,7 +121,6 @@ class EyeLinkApp:
         user = st.session_state['user_info']
         st.sidebar.title(f"🏫 {user['school_name']}")
         
-        # 실시간 상태 갱신을 위해 명단 데이터 로드
         df_students = self.db.fetch_students(user['school_id'])
         
         menu = st.sidebar.radio("관리 메뉴", ["실시간 학생 모니터링", "학생 위치 전송 시스템"])
@@ -137,7 +133,6 @@ class EyeLinkApp:
                 with c1:
                     st.subheader("👤 명단")
                     for _, row in df_students.iterrows():
-                        # [해결] 실시간 상태 표시 (🟢 전송중 / 🔴 중단)
                         status_icon = "🟢" if row.get('status') == "전송중" else "🔴"
                         if st.button(f"{status_icon} {row['student_name']}", key=f"s_{row['id']}", use_container_width=True):
                             st.session_state['selected_student_id'] = row['id']
@@ -148,7 +143,7 @@ class EyeLinkApp:
                     if st.session_state.get('selected_student_id'):
                         logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
                     self.render_kakao_map(df_students, logs_df)
-            else: st.info("데이터가 없습니다. 학생용 화면에서 전송을 시작해주세요.")
+            else: st.info("데이터가 없습니다. 학생 위치 전송 시스템을 이용해 주세요.")
 
         elif menu == "학생 위치 전송 시스템":
             st.title("📲 학생 위치 전송 시스템")
@@ -164,60 +159,53 @@ class EyeLinkApp:
                     self.render_gps_sender(s_name, user['school_id'])
 
     def render_gps_sender(self, s_name, school_id):
-        """[해결] 로그 미전송 문제 해결을 위한 디버깅 강화 스크립트"""
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
         gps_js = f"""
         <script>
         const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
         const studentId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000).toString().padStart(6,'0');
-        
         async function startSystem() {{
-            console.log("위치 전송 시스템 시작: ", sName, studentId);
             try {{
                 await fetch(sUrl + "/rest/v1/students", {{
                     method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
                     body: JSON.stringify({{ id: studentId, student_name: sName, school_id: schoolId, status: "전송중", lat: 0, lon: 0 }})
                 }});
             }} catch (e) {{ console.error("학생 등록 실패:", e); }}
-
             setInterval(() => {{
                 navigator.geolocation.getCurrentPosition(async (pos) => {{
                     const lat = pos.coords.latitude, lon = pos.coords.longitude;
-                    const timestamp = new Date().toISOString();
-
+                    const ts = new Date().toISOString();
                     fetch(sUrl + "/rest/v1/location_logs", {{
                         method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
-                        body: JSON.stringify({{ student_id: studentId, student_name: sName, lat: lat, lon: lon, created_at: timestamp }})
-                    }}).then(r => console.log("로그 전송 결과:", r.status));
-
+                        body: JSON.stringify({{ student_id: studentId, student_name: sName, lat: lat, lon: lon, created_at: ts }})
+                    }});
                     fetch(sUrl + "/rest/v1/students?id=eq." + studentId, {{
                         method: "PATCH", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
                         body: JSON.stringify({{ lat: lat, lon: lon, status: "전송중" }})
-                    }}).then(r => console.log("최신 위치 업데이트 결과:", r.status));
-                }}, (err) => {{ console.error("GPS 오류:", err.message); }}, {{ enableHighAccuracy: true }});
+                    }});
+                }}, (err) => {{ console.error(err.message); }}, {{ enableHighAccuracy: true }});
             }}, 10000);
         }}
         startSystem();
         </script>
-        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px;">
-            <h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h4>
-        </div>
+        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px;"><h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 전송 중</h4></div>
         """
         components.html(gps_js, height=120)
 
     def render_kakao_map(self, df_students, logs_df):
-        """[해결] 지도 마커 연동 및 깜빡임/고정 로직 반영"""
+        """[수정] NameError 해결 및 연결 상태별 시각화 보강"""
         if df_students.empty: return
         selected_id = st.session_state.get('selected_student_id')
         
-        # 1. 중심점 및 연결 상태 확인
+        # 1. 좌표 및 활성화 상태 결정 (기본 위치 없음)
         if not logs_df.empty:
             lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
             is_active = True
         else:
+            # logs_df가 비어있으면 students 테이블에서 마지막 위치를 가져옴
             current = df_students[df_students['id'].astype(str) == str(selected_id)] if selected_id else pd.DataFrame()
             if not current.empty and current.iloc[0]['lat'] != 0:
-                lat, lon = current.iloc[0]['lat'], current_student.iloc[0]['lon']
+                lat, lon = current.iloc[0]['lat'], current.iloc[0]['lon'] # [해결] NameError 변수 수정
                 is_active = False
             else:
                 st.info("위치 기록이 아직 없습니다."); return
@@ -232,11 +220,13 @@ class EyeLinkApp:
         if is_active:
             target_js = f"var content = '<div class=\"pulse-marker\"></div>'; new kakao.maps.CustomOverlay({{position:new kakao.maps.LatLng({lat},{lon}), content:content, map:map, yAnchor:0.5}});"
         else:
+            # 전송 중이 아닐 때는 일반 마커로 마지막 위치 표시
             target_js = f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat},{lon}), map: map, title: '마지막 위치' }});"
 
         map_html = f"""
         <html>
         <head>
+            <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
             <style>
                 #map {{ width: 100%; height: 600px; border-radius: 15px; background: #eee; }}
                 .pulse-marker {{ width: 18px; height: 18px; background: #FF0000; border: 3px solid #FFF; border-radius: 50%; box-shadow: 0 0 10px rgba(255,0,0,0.7); animation: pulse 1.5s infinite; }}
