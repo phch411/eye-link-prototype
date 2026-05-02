@@ -4,6 +4,7 @@ import pandas as pd
 import re
 import requests
 import streamlit.components.v1 as components
+from datetime import datetime
 
 # [필수] 1순위: 페이지 설정
 st.set_page_config(page_title="Eye-Link", layout="wide")
@@ -20,7 +21,6 @@ class EyeLinkDB:
             st.error("설정 오류: Streamlit Secrets를 확인해주세요.")
 
     def get_school_list(self, keyword):
-        """나이스 API 학교 검색"""
         url = "https://open.neis.go.kr/hub/schoolInfo"
         params = {"KEY": self.neis_key, "Type": "json", "pIndex": 1, "pSize": 10, "SCHUL_NM": keyword}
         try:
@@ -32,24 +32,40 @@ class EyeLinkDB:
 
     def authenticate(self, u_id, pw):
         try:
-            q = self.client.table("users").select("*").eq("school_id", u_id).eq("password", pw).execute()
+            # Table 이름 'users' -> 이미지 확인 결과 'user'인 경우 수정 필요 (여기서는 기존 코드 유지)
+            q = self.client.table("user").select("*").eq("school_id", u_id).eq("password", pw).execute()
             return q.data
         except: return []
 
     def register(self, u_id, pw, name, addr):
-        """회원가입 실행"""
         try:
-            check = self.client.table("users").select("school_id").eq("school_id", u_id).execute()
+            check = self.client.table("user").select("school_id").eq("school_id", u_id).execute()
             if len(check.data) > 0: return False, "이미 존재하는 아이디입니다."
             data = {"school_id": u_id, "password": pw, "school_name": name, "address": addr}
-            self.client.table("users").insert(data).execute()
+            self.client.table("user").insert(data).execute()
             return True, "회원가입이 완료되었습니다!"
         except Exception as e: return False, f"DB 오류: {str(e)}"
 
     def fetch_students(self, school_id):
         try:
-            q = self.client.table("students").select("*").eq("school_id", school_id).execute()
-            return pd.DataFrame(q.data)
+            res = self.client.table("students").select("*").eq("school_id", school_id).execute()
+            return pd.DataFrame(res.data)
+        except: return pd.DataFrame()
+
+    def fetch_location_logs(self, student_id):
+        """학생의 10초 단위 로그를 수파베이스에서 가져옴"""
+        try:
+            res = self.client.table("location_logs")\
+                .select("created_at, lat, lon")\
+                .eq("student_id", str(student_id))\
+                .order("created_at", desc=True)\
+                .limit(50)\
+                .execute()
+            df = pd.DataFrame(res.data)
+            if not df.empty:
+                df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%H:%M:%S')
+                df.columns = ['기록 시간', '위도(Lat)', '경도(Lon)']
+            return df
         except: return pd.DataFrame()
 
 # --- 2. UI 및 로직 제어 클래스 (View/Controller) ---
@@ -59,6 +75,9 @@ class EyeLinkApp:
         if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
         if 'show_signup' not in st.session_state: st.session_state['show_signup'] = False
         if 'user_info' not in st.session_state: st.session_state['user_info'] = None
+        # 학생 선택 상태 추가
+        if 'selected_student_id' not in st.session_state: st.session_state['selected_student_id'] = None
+        if 'selected_student_name' not in st.session_state: st.session_state['selected_student_name'] = None
 
     def validate_pw(self, pw):
         if not pw: return None, ""
@@ -67,23 +86,13 @@ class EyeLinkApp:
         return False, "❌ 8자 이상, 영문+숫자+특수문자 필수"
 
     def show_login_page(self):
-        """감성적인 첫 화면"""
         _, col, _ = st.columns([1, 1.5, 1])
         with col:
-            st.write("")
-            st.write("")
             st.title("🛡️ Eye-Link")
-            st.markdown("""
-                ### **아이들의 발걸음이**  
-                ### **언제나 안녕하기를.**
-                
-                가장 따뜻한 시선으로  
-                아이들의 소중한 등하굣길을 함께 지킵니다.
-            """)
-            st.write("")
+            st.markdown("### **아이들의 발걸음이 언제나 안녕하기를.**")
             with st.container(border=True):
-                u_id = st.text_input("아이디 (ID)", placeholder="학교 아이디를 입력하세요")
-                u_pw = st.text_input("비밀번호", type="password", placeholder="비밀번호를 입력하세요")
+                u_id = st.text_input("학교 아이디 (school_id)", placeholder="아이디를 입력하세요")
+                u_pw = st.text_input("비밀번호 (password)", type="password", placeholder="비밀번호를 입력하세요")
                 if st.button("함께하기", use_container_width=True):
                     user = self.db.authenticate(u_id, u_pw)
                     if user:
@@ -97,48 +106,36 @@ class EyeLinkApp:
                     st.rerun()
 
     def show_signup_page(self):
-        """[핵심] 학교 등록(회원가입) 페이지"""
         _, col, _ = st.columns([1, 2, 1])
         with col:
             st.title("📝 학교 가입")
             with st.container(border=True):
                 s_input = st.text_input("1. 학교명 검색 (2글자 이상 입력)")
                 selected_school = None
-                
                 if len(s_input) >= 2:
                     school_list = self.db.get_school_list(s_input)
                     if school_list:
                         opts = {f"{s['SCHUL_NM']} ({s['ORG_RDNMA']})": s for s in school_list}
                         choice = st.selectbox("2. 학교 선택", options=["선택하세요"] + list(opts.keys()))
-                        if choice != "선택하세요":
-                            selected_school = opts[choice]
-                    else: st.warning("검색 결과가 없습니다.")
-
+                        if choice != "선택하세요": selected_school = opts[choice]
+                
                 if selected_school:
-                    st.divider()
-                    s_name, s_addr = selected_school['SCHUL_NM'], selected_school['ORG_RDNMA']
-                    st.info(f"📍 선택된 학교: {s_name}")
-                    
+                    st.info(f"📍 선택된 학교: {selected_school['SCHUL_NM']}")
                     u_id = st.text_input("3. 사용할 학교 관리자 ID")
                     pw = st.text_input("4. 비밀번호 설정", type="password")
                     is_v, msg = self.validate_pw(pw)
                     if pw:
                         if is_v: st.success(msg)
                         else: st.error(msg)
-                    
                     pw_c = st.text_input("5. 비밀번호 확인", type="password")
-                    
                     if st.button("가입 완료", use_container_width=True):
                         if u_id and is_v and pw == pw_c:
-                            ok, res = self.db.register(u_id, pw, s_name, s_addr)
+                            ok, res = self.db.register(u_id, pw, selected_school['SCHUL_NM'], selected_school['ORG_RDNMA'])
                             if ok:
                                 st.success(res)
-                                st.balloons()
                                 st.session_state['show_signup'] = False
                                 st.rerun()
                             else: st.error(res)
-                        else: st.warning("입력 정보를 다시 확인해 주세요.")
-            
             if st.button("이전으로 돌아가기"):
                 st.session_state['show_signup'] = False
                 st.rerun()
@@ -147,77 +144,72 @@ class EyeLinkApp:
         """실시간 모니터링 대시보드"""
         user = st.session_state['user_info']
         st.sidebar.title(f"🏫 {user['school_name']}")
-        menu = st.sidebar.radio("관리 메뉴", ["실시간 학생 모니터링", "학생별 상황", "사전 위험구간 설정"])
         if st.sidebar.button("로그아웃"):
             st.session_state['logged_in'] = False
             st.rerun()
 
         df = self.db.fetch_students(user['school_id'])
 
-        if menu == "실시간 학생 모니터링":
-            st.title("👁️ 실시간 학생 모니터링")
+        st.title("👁️ 실시간 학생 모니터링")
+        
+        # 메인 레이아웃: 왼쪽(학생 명단 버튼) / 오른쪽(지도)
+        col_list, col_map = st.columns([1, 3])
+        
+        with col_list:
+            st.subheader("👤 학생 명단")
             if not df.empty:
-                col_list, col_map = st.columns([1, 3])
-                with col_list:
-                    st.subheader("👤 명단")
-                    for _, row in df.iterrows():
-                        st.write(f"🟢 **{row['student_name']}**")
-                with col_map:
-                    self.render_kakao_map(df)
+                for _, row in df.iterrows():
+                    # [이미지 반영] status 값에 따른 아이콘 (정상=🟢, 나머지=🔴)
+                    status_icon = "🟢" if row.get('status') == "정상" else "🔴"
+                    
+                    # [요청사항] 학생 이름을 클릭 가능한 버튼으로 생성
+                    if st.button(f"{status_icon} {row['student_name']}", key=f"btn_{row['id']}", use_container_width=True):
+                        st.session_state['selected_student_id'] = row['id']
+                        st.session_state['selected_student_name'] = row['student_name']
+                        st.rerun()
             else:
-                st.info("데이터가 없습니다. GPS 기기를 켜주세요.")
+                st.info("등록된 학생이 없습니다.")
+
+        with col_map:
+            self.render_kakao_map(df)
+
+        # 학생 클릭 시 하단에 로그 기록 출력
+        if st.session_state['selected_student_id']:
+            st.divider()
+            st.subheader(f"📊 {st.session_state['selected_student_name']} 학생 상세 이동 로그 (10초 단위)")
+            logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
+            if not logs_df.empty:
+                st.dataframe(logs_df, use_container_width=True, height=300)
+            else:
+                st.warning("기록된 위치 로그가 없습니다.")
 
     def render_kakao_map(self, df):
         if df.empty:
             st.info("표시할 위치 데이터가 없습니다.")
             return
-
         lat, lon = df.iloc[0]['lat'], df.iloc[0]['lon']
         kakao_key = st.secrets['kakao']['js_key']
-        
         markers_js = ""
         for _, r in df.iterrows():
-            markers_js += f"""
-                new kakao.maps.Marker({{
-                    map: map,
-                    position: new kakao.maps.LatLng({r['lat']}, {r['lon']}),
-                    title: '{r['student_name']}'
-                }});
-            """
+            markers_js += f"new kakao.maps.Marker({{map:map, position:new kakao.maps.LatLng({r['lat']},{r['lon']}), title:'{r['student_name']}'}});"
 
         map_html = f"""
         <html>
-        <head>
-            <!-- [핵심] 모든 http 요청을 https로 자동 전환하여 Mixed Content 차단 -->
-            <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
-        </head>
-        <body>
-            <div id="map" style="width:100%;height:500px;border-radius:15px;background-color:#f8f9fa;"></div>
-            
-            <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
-            <script>
-                function initMap() {{
-                    if (typeof kakao === 'undefined' || !kakao.maps) {{
-                        setTimeout(initMap, 100);
-                        return;
-                    }}
-
-                    kakao.maps.load(function() {{
-                        var container = document.getElementById('map');
-                        var options = {{
-                            center: new kakao.maps.LatLng({lat}, {lon}),
-                            level: 3
-                        }};
-                        var map = new kakao.maps.Map(container, options);
-                        {markers_js}
-                    }});
-                }}
-                initMap();
-            </script>
-        </body>
-        </html>
+        <head><meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests"></head>
+        <body style="margin:0;"><div id="map" style="width:100%;height:500px;border-radius:15px;"></div>
+        <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
+        <script>
+            function init() {{
+                if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
+                kakao.maps.load(function() {{
+                    var map = new kakao.maps.Map(document.getElementById('map'), {{center: new kakao.maps.LatLng({lat}, {lon}), level: 3}});
+                    {markers_js}
+                }});
+            }}
+            init();
+        </script></body></html>
         """
-        components.html(map_html, height=550)
+        components.html(map_html, height=520)
 
 # --- 3. 실행부 ---
 if __name__ == "__main__":
@@ -225,6 +217,6 @@ if __name__ == "__main__":
     if st.session_state['logged_in']:
         app.show_dashboard()
     elif st.session_state['show_signup']:
-        app.show_signup_page() # 이제 이 함수가 정상 작동합니다!
+        app.show_signup_page()
     else:
         app.show_login_page()
