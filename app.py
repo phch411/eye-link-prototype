@@ -69,6 +69,17 @@ class EyeLinkDB:
             return df
         except: return pd.DataFrame()
 
+    def update_student_status(self, s_name, status):
+        """학생의 전송 상태(전송중/중단)를 직접 업데이트"""
+        try:
+            student_id = parseInt_id(s_name)
+            self.client.table("students").update({"status": status}).eq("id", student_id).execute()
+        except: pass
+
+def parseInt_id(s_name):
+    """이름 기반 고유 숫자 ID 생성 (재사용 가능하도록 분리)"""
+    return int(abs(sum(ord(c) << (i % 5) for i, c in enumerate(s_name)) % 1000000))
+
 # --- 2. UI 및 로직 제어 클래스 (View/Controller) ---
 class EyeLinkApp:
     def __init__(self):
@@ -149,14 +160,24 @@ class EyeLinkApp:
             st.title("📲 학생 위치 전송 시스템")
             with st.container(border=True):
                 s_name = st.text_input("학생 이름 입력", placeholder="이름을 입력하면 모니터링 명단에 등록됩니다.")
-                if st.button("🚀 위치 전송 시작", use_container_width=True, type="primary"):
+                
+                col1, col2 = st.columns(2)
+                if col1.button("🚀 위치 전송 시작", use_container_width=True, type="primary"):
                     if s_name:
                         st.session_state['tracking_active'] = True
+                        st.session_state['current_tracking_name'] = s_name
                         st.success(f"{s_name} 학생 전송 시작!")
                     else: st.warning("이름을 입력해주세요.")
-                if st.button("⏹️ 전송 중지"): st.session_state['tracking_active'] = False; st.rerun()
+                
+                if col2.button("⏹️ 전송 중지", use_container_width=True):
+                    if st.session_state.get('tracking_active'):
+                        # 중지 버튼 클릭 시 DB 상태를 '중단'으로 명시적 변경
+                        self.db.update_student_status(st.session_state['current_tracking_name'], "중단")
+                        st.session_state['tracking_active'] = False
+                        st.rerun()
+
                 if st.session_state['tracking_active']:
-                    self.render_gps_sender(s_name, user['school_id'])
+                    self.render_gps_sender(st.session_state['current_tracking_name'], user['school_id'])
 
     def render_gps_sender(self, s_name, school_id):
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
@@ -167,7 +188,6 @@ class EyeLinkApp:
         const sName = "{s_name}";
         const schoolId = "{school_id}";
         
-        // 이름 기반 고유 숫자 ID 생성 (int8 대응)
         const studentId = parseInt(Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000));
 
         async function pushPosition() {{
@@ -176,8 +196,6 @@ class EyeLinkApp:
                 const lon = parseFloat(pos.coords.longitude.toFixed(7));
                 const now = new Date().toISOString();
 
-                // A. Students 테이블 업데이트 (Upsert)
-                // id를 숫자로 보내야 400 에러가 나지 않습니다.
                 await fetch(sUrl + "/rest/v1/students", {{
                     method: "POST",
                     headers: {{ 
@@ -197,7 +215,6 @@ class EyeLinkApp:
                     }})
                 }});
 
-                // B. Location_logs 테이블 기록
                 await fetch(sUrl + "/rest/v1/location_logs", {{
                     method: "POST",
                     headers: {{ 
@@ -215,20 +232,23 @@ class EyeLinkApp:
                 }});
             }}, null, {{ enableHighAccuracy: true }});
         }}
+        
         // 10초마다 반복 실행
-        setInterval(pushPosition, 10000);
+        const timerId = setInterval(pushPosition, 10000);
         pushPosition();
         </script>
+        <div style="padding:15px; background:#e8f5e9; border-radius:10px; text-align:center; border: 1px solid #c8e6c9;">
+            <b style="color:#2e7d32;">🛰️ {s_name} 학생 실시간 위치 전송 중...</b>
+        </div>
         """
-        components.html(gps_js, height=0)
+        components.html(gps_js, height=100)
+
     def render_kakao_map(self, df_students, logs_df):
-        """[안정화 버전] 지도가 완전히 로드될 때까지 기다린 후 실행"""
         if df_students.empty:
             return
             
         selected_id = st.session_state.get('selected_student_id')
         
-        # 1. 중심 좌표 결정
         if not logs_df.empty:
             lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
             is_active = True
@@ -243,7 +263,6 @@ class EyeLinkApp:
 
         kakao_key = st.secrets['kakao']['js_key']
         
-        # 2. 마커 및 오버레이 스크립트 구성
         all_markers_js = ""
         for _, r in df_students.iterrows():
             if r['lat'] != 0 and str(r['id']) != str(selected_id):
@@ -276,12 +295,10 @@ class EyeLinkApp:
             <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
             <script>
                 function initMap() {{
-                    // kakao 객체가 로드될 때까지 재시도
                     if (typeof kakao === 'undefined' || !kakao.maps) {{
                         setTimeout(initMap, 100);
                         return;
                     }}
-                    
                     kakao.maps.load(function() {{
                         var container = document.getElementById('map');
                         var options = {{
@@ -289,7 +306,6 @@ class EyeLinkApp:
                             level: 3
                         }};
                         var map = new kakao.maps.Map(container, options);
-                        
                         {all_markers_js}
                         {target_js}
                     }});
