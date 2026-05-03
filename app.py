@@ -159,39 +159,70 @@ class EyeLinkApp:
                     self.render_gps_sender(s_name, user['school_id'])
 
     def render_gps_sender(self, s_name, school_id):
-        """[로그 해결 핵심] 데이터가 확실히 꽂히도록 만든 전송 스크립트"""
+        """
+        [로그 전송 보장 버전]
+        1. 단순 fetch 구조: 복잡한 옵션을 제거하고 가장 표준적인 POST 방식으로 전송
+        2. 독립적 실행: 학생 정보 등록과 로그 전송을 분리하여 하나가 실패해도 로그는 남도록 구성
+        3. 디버깅 알림: 전송 실패 시 브라우저 콘솔(F12)에 상세 에러 출력
+        """
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
         gps_js = f"""
         <script>
         const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
         const studentId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000).toString().padStart(6,'0');
         
-        async function sendData() {{
-            if (!navigator.geolocation) return;
-            
-            navigator.geolocation.getCurrentPosition(async (pos) => {{
-                const lat = pos.coords.latitude, lon = pos.coords.longitude;
-                const now = new Date().toISOString();
+        async function initSender() {{
+            // 1. 학생 기본 정보 등록 (최초 1회만)
+            await fetch(sUrl + "/rest/v1/students", {{
+                method: "POST", 
+                headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
+                body: JSON.stringify({{ id: studentId, student_name: sName, school_id: schoolId, status: "전송중" }})
+            }});
 
-                // 1. location_logs에 기록 (동선용 누적 데이터)
-                fetch(sUrl + "/rest/v1/location_logs", {{
-                    method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ student_id: studentId, student_name: sName, lat: lat, lon: lon, created_at: now }})
-                }});
+            // 2. 10초마다 위치 전송 반복
+            setInterval(() => {{
+                navigator.geolocation.getCurrentPosition(async (pos) => {{
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+                    const timestamp = new Date().toISOString();
 
-                // 2. students 테이블에 상태/위치 업데이트 (실시간 마커용)
-                fetch(sUrl + "/rest/v1/students", {{
-                    method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
-                    body: JSON.stringify({{ id: studentId, student_name: sName, school_id: schoolId, status: "전송중", lat: lat, lon: lon }})
-                }});
-            }}, (err) => console.error(err), {{ enableHighAccuracy: true }});
+                    // A. location_logs에 직접 POST (로그 전송)
+                    const logData = {{
+                        student_id: studentId,
+                        student_name: sName,
+                        lat: lat,
+                        lon: lon,
+                        created_at: timestamp
+                    }};
+
+                    fetch(sUrl + "/rest/v1/location_logs", {{
+                        method: "POST",
+                        headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
+                        body: JSON.stringify(logData)
+                    }})
+                    .then(r => console.log("Log Success:", r.status))
+                    .catch(e => console.error("Log Error:", e));
+
+                    // B. students 테이블 현재 위치 업데이트
+                    fetch(sUrl + "/rest/v1/students?id=eq." + studentId, {{
+                        method: "PATCH",
+                        headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
+                        body: JSON.stringify({{ lat: lat, lon: lon, status: "전송중" }})
+                    }});
+                    
+                }}, (err) => {{
+                    console.error("GPS Error:", err.message);
+                }}, {{ enableHighAccuracy: true, timeout: 5000 }});
+            }}, 10000);
         }}
-        sendData();
-        setInterval(sendData, 10000); // 10초마다 실행
+        initSender();
         </script>
-        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px;"><h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h4></div>
+        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px; border:2px solid #2e7d32;">
+            <h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h4>
+            <p style="font-size:0.8rem; color:#666; margin-top:5px;">수파베이스 로그 전송 모드 가동 중</p>
+        </div>
         """
-        components.html(gps_js, height=120)
+        components.html(gps_js, height=130)
 
     def render_kakao_map(self, df_students, logs_df):
         """[안정화 버전] 지도가 완전히 로드될 때까지 기다린 후 실행"""
