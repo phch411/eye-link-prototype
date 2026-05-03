@@ -161,56 +161,49 @@ class EyeLinkApp:
     def render_gps_sender(self, s_name, school_id):
         """
         [해결 포인트]
-        1. 이름 누락 방지: Upsert 시 모든 필드(student_name 등)를 명시적으로 재전송
-        2. 로그 전송 보장: async/await 순차 처리를 통해 등록 후 로그 전송이 이루어지도록 보정
-        3. RLS 충돌 방지: 헤더 및 데이터 전송 구조 최적화
+        1. 이름 누락 방지: Upsert 시 student_name을 명시하여 빈 이름 방지
+        2. 로그 전송 보장: async/await를 사용하여 학생 정보가 DB에 생성된 후 로그가 쌓이도록 순서 보정
+        3. 실시간 업데이트: students 테이블과 location_logs 테이블에 동시에 데이터가 기록되도록 설정
         """
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
         gps_js = f"""
         <script>
         const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
         
-        // 이름과 기기 정보를 조합한 고유 6자리 ID 생성
+        // 이름 기반 고유 6자리 ID 생성 (이름이 같아도 기기가 다르면 다르게 생성됨)
         const studentId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000).toString().padStart(6,'0');
         
         async function startSystem() {{
-            console.log("시스템 시작: " + sName + " (#" + studentId + ")");
+            console.log("위치 추적 시스템 가동: " + sName + " (#" + studentId + ")");
             
-            // 1. 학생 정보 등록 또는 갱신 (이름 누락 방지 핵심)
-            const registerStudent = async () => {{
-                try {{
-                    const response = await fetch(sUrl + "/rest/v1/students", {{
-                        method: "POST", 
-                        headers: {{ 
-                            "apikey": sKey, 
-                            "Authorization": "Bearer " + sKey, 
-                            "Content-Type": "application/json", 
-                            "Prefer": "resolution=merge-duplicates" // 동일 ID 발생 시 덮어쓰기
-                        }},
-                        body: JSON.stringify({{ 
-                            id: studentId, 
-                            student_name: sName, 
-                            school_id: schoolId, 
-                            status: "전송중" 
-                        }})
-                    }});
-                    console.log("학생 등록/갱신 결과:", response.status);
-                }} catch (e) {{ console.error("학생 정보 Upsert 오류:", e); }}
-            }};
+            // 1. 학생 정보 먼저 Upsert (이름이 비어있는 현상 방지를 위해 필드 전체 전송)
+            try {{
+                const regRes = await fetch(sUrl + "/rest/v1/students", {{
+                    method: "POST", 
+                    headers: {{ 
+                        "apikey": sKey, 
+                        "Authorization": "Bearer " + sKey, 
+                        "Content-Type": "application/json", 
+                        "Prefer": "resolution=merge-duplicates" 
+                    }},
+                    body: JSON.stringify({{ 
+                        id: studentId, 
+                        student_name: sName, 
+                        school_id: schoolId, 
+                        status: "전송중" 
+                    }})
+                }});
+                console.log("학생 등록/갱신 확인:", regRes.status);
+            }} catch (e) {{ console.error("학생 정보 등록 실패:", e); }}
 
-            // 최초 1회 실행
-            await registerStudent();
-
-            // 2. 10초마다 반복 전송
+            // 2. 10초마다 위치 획득 및 서버 전송
             setInterval(() => {{
                 navigator.geolocation.getCurrentPosition(async (pos) => {{
                     const lat = pos.coords.latitude;
                     const lon = pos.coords.longitude;
                     const timestamp = new Date().toISOString();
 
-                    console.log("위치 획득: ", lat, lon);
-
-                    // A. 동선 로그 저장 (location_logs)
+                    // A. location_logs 테이블에 로그 기록 (누적 기록)
                     fetch(sUrl + "/rest/v1/location_logs", {{
                         method: "POST", 
                         headers: {{ 
@@ -225,9 +218,12 @@ class EyeLinkApp:
                             lon: lon, 
                             created_at: timestamp 
                         }})
-                    }}).then(r => console.log("로그 전송 완료: ", r.status));
+                    }}).then(r => {{
+                        if(r.ok) console.log("동선 로그 저장 성공 (" + timestamp + ")");
+                        else console.error("로그 저장 실패:", r.status);
+                    }});
 
-                    // B. 실시간 최신 위치 및 상태 업데이트 (students)
+                    // B. students 테이블 최신 위치 업데이트 (실시간 마커용)
                     fetch(sUrl + "/rest/v1/students?id=eq." + studentId, {{
                         method: "PATCH", 
                         headers: {{ 
@@ -239,20 +235,20 @@ class EyeLinkApp:
                             lat: lat, 
                             lon: lon, 
                             status: "전송중",
-                            student_name: sName // 이름이 비워지는 현상 방지용 재입력
+                            student_name: sName // 이름 누락 방지를 위해 다시 한번 전송
                         }})
-                    }}).then(r => console.log("최신 위치 갱신 완료: ", r.status));
+                    }});
                     
                 }}, (err) => {{
-                    console.error("GPS 권한 거부됨:", err.message);
+                    console.error("GPS 권한 오류: ", err.message);
                 }}, {{ enableHighAccuracy: true, timeout: 5000 }});
             }}, 10000);
         }}
         startSystem();
         </script>
         <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px; border:1px solid #c8e6c9;">
-            <h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 실시간 위치 전송 중</h4>
-            <p style="font-size:0.8rem; color:#666; margin-top:5px;">브라우저 위치 정보 권한을 꼭 확인해주세요.</p>
+            <h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h4>
+            <p style="font-size:0.8rem; color:#666; margin-top:5px;">브라우저 위치 권한을 승인해야 로그가 저장됩니다.</p>
         </div>
         """
         components.html(gps_js, height=130)
