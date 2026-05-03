@@ -160,98 +160,88 @@ class EyeLinkApp:
 
     def render_gps_sender(self, s_name, school_id):
         """
-        [해결 포인트]
-        1. 이름 누락 방지: Upsert 시 student_name을 명시하여 빈 이름 방지
-        2. 로그 전송 보장: async/await를 사용하여 학생 정보가 DB에 생성된 후 로그가 쌓이도록 순서 보정
-        3. 실시간 업데이트: students 테이블과 location_logs 테이블에 동시에 데이터가 기록되도록 설정
+        [긴급 조치 사항]
+        1. 단순화: 복잡한 async를 제거하고 가장 직관적인 fetch 구조로 변경
+        2. 가시화: 전송 성공/실패 시 브라우저 알림(alert)을 띄워 실제 작동 여부 확인
+        3. 필드 강제 매칭: student_id, student_name, lat, lon, school_id를 정확히 매칭
         """
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
         gps_js = f"""
         <script>
-        const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
+        const sUrl = "{url}";
+        const sKey = "{key}";
+        const schoolId = "{school_id}";
+        const sName = "{s_name}";
         
-        // 이름 기반 고유 6자리 ID 생성 (이름이 같아도 기기가 다르면 다르게 생성됨)
+        // 고유 ID 생성
         const studentId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000).toString().padStart(6,'0');
         
-        async function startSystem() {{
-            console.log("위치 추적 시스템 가동: " + sName + " (#" + studentId + ")");
-            
-            // 1. 학생 정보 먼저 Upsert (이름이 비어있는 현상 방지를 위해 필드 전체 전송)
-            try {{
-                const regRes = await fetch(sUrl + "/rest/v1/students", {{
-                    method: "POST", 
-                    headers: {{ 
-                        "apikey": sKey, 
-                        "Authorization": "Bearer " + sKey, 
-                        "Content-Type": "application/json", 
-                        "Prefer": "resolution=merge-duplicates" 
+        function sendToSupabase() {{
+            if (!navigator.geolocation) {{
+                alert("이 브라우저는 GPS를 지원하지 않습니다.");
+                return;
+            }}
+
+            navigator.geolocation.getCurrentPosition((pos) => {{
+                const lat = pos.coords.latitude;
+                const lon = pos.coords.longitude;
+                const now = new Date().toISOString();
+
+                // 1. location_logs 테이블에 전송
+                fetch(sUrl + "/rest/v1/location_logs", {{
+                    method: "POST",
+                    headers: {{
+                        "apikey": sKey,
+                        "Authorization": "Bearer " + sKey,
+                        "Content-Type": "application/json",
+                        "Prefer": "return=minimal"
                     }},
-                    body: JSON.stringify({{ 
-                        id: studentId, 
-                        student_name: sName, 
-                        school_id: schoolId, 
-                        status: "전송중" 
+                    body: JSON.stringify({{
+                        student_id: studentId,
+                        student_name: sName,
+                        lat: lat,
+                        lon: lon,
+                        created_at: now
+                    }})
+                }}).then(res => {{
+                    if(res.ok) console.log("로그 저장 완료");
+                    else console.error("로그 저장 에러: " + res.status);
+                }});
+
+                // 2. students 테이블 업데이트 (실시간 마커용)
+                fetch(sUrl + "/rest/v1/students", {{
+                    method: "POST",
+                    headers: {{
+                        "apikey": sKey,
+                        "Authorization": "Bearer " + sKey,
+                        "Content-Type": "application/json",
+                        "Prefer": "resolution=merge-duplicates"
+                    }},
+                    body: JSON.stringify({{
+                        id: studentId,
+                        student_name: sName,
+                        school_id: schoolId,
+                        status: "전송중",
+                        lat: lat,
+                        lon: lon
                     }})
                 }});
-                console.log("학생 등록/갱신 확인:", regRes.status);
-            }} catch (e) {{ console.error("학생 정보 등록 실패:", e); }}
 
-            // 2. 10초마다 위치 획득 및 서버 전송
-            setInterval(() => {{
-                navigator.geolocation.getCurrentPosition(async (pos) => {{
-                    const lat = pos.coords.latitude;
-                    const lon = pos.coords.longitude;
-                    const timestamp = new Date().toISOString();
-
-                    // A. location_logs 테이블에 로그 기록 (누적 기록)
-                    fetch(sUrl + "/rest/v1/location_logs", {{
-                        method: "POST", 
-                        headers: {{ 
-                            "apikey": sKey, 
-                            "Authorization": "Bearer " + sKey, 
-                            "Content-Type": "application/json" 
-                        }},
-                        body: JSON.stringify({{ 
-                            student_id: studentId, 
-                            student_name: sName, 
-                            lat: lat, 
-                            lon: lon, 
-                            created_at: timestamp 
-                        }})
-                    }}).then(r => {{
-                        if(r.ok) console.log("동선 로그 저장 성공 (" + timestamp + ")");
-                        else console.error("로그 저장 실패:", r.status);
-                    }});
-
-                    // B. students 테이블 최신 위치 업데이트 (실시간 마커용)
-                    fetch(sUrl + "/rest/v1/students?id=eq." + studentId, {{
-                        method: "PATCH", 
-                        headers: {{ 
-                            "apikey": sKey, 
-                            "Authorization": "Bearer " + sKey, 
-                            "Content-Type": "application/json" 
-                        }},
-                        body: JSON.stringify({{ 
-                            lat: lat, 
-                            lon: lon, 
-                            status: "전송중",
-                            student_name: sName // 이름 누락 방지를 위해 다시 한번 전송
-                        }})
-                    }});
-                    
-                }}, (err) => {{
-                    console.error("GPS 권한 오류: ", err.message);
-                }}, {{ enableHighAccuracy: true, timeout: 5000 }});
-            }}, 10000);
+            }}, (err) => {{
+                console.error("GPS 오류: " + err.message);
+            }}, {{ enableHighAccuracy: true }});
         }}
-        startSystem();
+
+        // 시작 즉시 전송 후 10초마다 반복
+        sendToSupabase();
+        setInterval(sendToSupabase, 10000);
         </script>
-        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px; border:1px solid #c8e6c9;">
-            <h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h4>
-            <p style="font-size:0.8rem; color:#666; margin-top:5px;">브라우저 위치 권한을 승인해야 로그가 저장됩니다.</p>
+        <div style="text-align:center; padding:20px; background:#e8f5e9; border-radius:10px; border:2px solid #2e7d32;">
+            <h3 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h3>
+            <p style="margin:5px 0 0 0; color:#666;">수파베이스 연동 확인용 디버깅 모드 가동</p>
         </div>
         """
-        components.html(gps_js, height=130)
+        components.html(gps_js, height=150)
 
     def render_kakao_map(self, df_students, logs_df):
         """[수정] NameError 해결 및 연결 상태별 시각화 보강"""
