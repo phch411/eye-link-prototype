@@ -15,7 +15,6 @@ class EyeLinkDB:
             self.url = st.secrets["supabase"]["url"]
             self.key = st.secrets["supabase"]["key"]
             self.client = create_client(self.url, self.key)
-            self.neis_key = st.secrets["neis"]["api_key"]
         except Exception as e:
             st.error("설정 오류: Secrets를 확인해주세요.")
 
@@ -42,8 +41,6 @@ class EyeLinkDB:
                 .limit(1)\
                 .execute()
             df = pd.DataFrame(res.data)
-            if not df.empty:
-                df.columns = ['시간', '위도', '경도']
             return df
         except: return pd.DataFrame()
 
@@ -54,7 +51,7 @@ class EyeLinkDB:
             self.client.table("students").update({"status": status}).eq("id", student_id).execute()
         except: pass
 
-# --- 2. UI 및 로직 제어 클래스 ---
+# --- 2. 앱 로직 제어 클래스 ---
 class EyeLinkApp:
     def __init__(self):
         self.db = EyeLinkDB()
@@ -151,38 +148,34 @@ class EyeLinkApp:
         components.html(gps_js, height=100)
 
     def render_kakao_map(self, df_students, logs_df, is_active):
-        if df_students.empty: return
-        selected_id = st.session_state.get('selected_student_id')
+        kakao_key = st.secrets['kakao']['js_key']
         
-        # 좌표 결정
+        # 중심 좌표 설정
         if not logs_df.empty:
-            lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
+            lat, lon = logs_df.iloc[0]['lat'], logs_df.iloc[0]['lon']
         else:
+            selected_id = st.session_state.get('selected_student_id')
             current = df_students[df_students['id'] == selected_id]
             if not current.empty and current.iloc[0]['lat'] != 0:
                 lat, lon = current.iloc[0]['lat'], current.iloc[0]['lon']
-            else: st.info("기록이 없습니다."); return
+            else:
+                lat, lon = 35.8714, 128.6014 # 대구 기본 좌표
 
-        kakao_key = st.secrets['kakao']['js_key']
-        
-        # 마커 로직 (파란색 마커 중복 방지)
-        marker_script = ""
+        # 마커 스크립트 분기 (파란색 마커 제거)
         if is_active:
-            # 전송 중일 때: 빨간색 깜빡이만 생성
-            marker_script = f"""
+            marker_code = f"""
             var content = '<div class="pulse-marker"></div>';
             new kakao.maps.CustomOverlay({{ position: new kakao.maps.LatLng({lat}, {lon}), content: content, map: map, yAnchor: 0.5 }});
             """
         else:
-            # 중단 상태일 때: 파란색 기본 마커만 생성
-            marker_script = f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat}, {lon}), map: map }});"
+            marker_code = f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat}, {lon}), map: map }});"
 
         map_html = f"""
         <html>
         <head>
             <style>
                 #map {{ width: 100%; height: 600px; border-radius: 15px; background: #eee; }}
-                .pulse-marker {{ width: 20px; height: 20px; background: #FF0000; border: 3px solid #FFF; border-radius: 50%; box-shadow: 0 0 10px rgba(255,0,0,0.7); animation: pulse 1.5s infinite; }}
+                .pulse-marker {{ width: 20px; height: 20px; background: red; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 10px rgba(255,0,0,0.7); animation: pulse 1.5s infinite; }}
                 @keyframes pulse {{ 0% {{ transform: scale(0.9); opacity: 1; }} 70% {{ transform: scale(1.2); opacity: 0.5; }} 100% {{ transform: scale(0.9); opacity: 1; }} }}
             </style>
         </head>
@@ -193,7 +186,7 @@ class EyeLinkApp:
                     if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
                     kakao.maps.load(function() {{
                         var map = new kakao.maps.Map(document.getElementById('map'), {{ center: new kakao.maps.LatLng({lat}, {lon}), level: 3 }});
-                        {marker_script}
+                        {marker_code}
                     }});
                 }}
                 init();
