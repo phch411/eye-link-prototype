@@ -15,6 +15,7 @@ class EyeLinkDB:
             self.url = st.secrets["supabase"]["url"]
             self.key = st.secrets["supabase"]["key"]
             self.client = create_client(self.url, self.key)
+            self.neis_key = st.secrets["neis"]["api_key"]
         except Exception as e:
             st.error("설정 오류: Secrets를 확인해주세요.")
 
@@ -26,6 +27,24 @@ class EyeLinkDB:
             return []
         except: return []
 
+    def get_school_list(self, keyword):
+        url = "https://open.neis.go.kr/hub/schoolInfo"
+        params = {"KEY": self.neis_key, "Type": "json", "pIndex": 1, "pSize": 10, "SCHUL_NM": keyword}
+        try:
+            res = requests.get(url, params=params).json()
+            if "schoolInfo" in res: return res["schoolInfo"][1]["row"]
+            return []
+        except: return []
+
+    def register(self, u_id, pw, name, addr):
+        try:
+            check = self.client.table("users").select("school_id").eq("school_id", u_id).execute()
+            if len(check.data) > 0: return False, "이미 존재하는 아이디입니다."
+            data = {"school_id": u_id, "password": pw, "school_name": name, "address": addr}
+            self.client.table("users").insert(data).execute()
+            return True, "회원가입 완료!"
+        except: return False, "DB 오류"
+
     def fetch_students(self, school_id):
         try:
             q = self.client.table("students").select("*").eq("school_id", school_id).order("student_name").execute()
@@ -33,9 +52,8 @@ class EyeLinkDB:
         except: return pd.DataFrame()
 
     def update_student_status(self, s_name, status):
-        """[해결] 파이썬 문법에 맞게 ID 생성 및 상태 업데이트 로직 수정"""
+        """학생 상태 강제 업데이트"""
         try:
-            # 자바스크립트 로직과 동일한 결과가 나오도록 파이썬으로 구현
             student_id = int(abs(sum(ord(c) for c in s_name) % 1000000))
             self.client.table("students").update({"status": status}).eq("id", student_id).execute()
         except: pass
@@ -45,29 +63,60 @@ class EyeLinkApp:
     def __init__(self):
         self.db = EyeLinkDB()
         if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+        if 'show_signup' not in st.session_state: st.session_state['show_signup'] = False
         if 'user_info' not in st.session_state: st.session_state['user_info'] = None
         if 'selected_student_id' not in st.session_state: st.session_state['selected_student_id'] = None
         if 'tracking_active' not in st.session_state: st.session_state['tracking_active'] = False
 
     def show_login_page(self):
+        """[복구] 학교 등록 버튼이 포함된 로그인 페이지"""
         _, col, _ = st.columns([1, 1.5, 1])
         with col:
             st.title("🛡️ Eye-Link")
             with st.container(border=True):
                 u_id = st.text_input("아이디 (school_id)")
                 u_pw = st.text_input("비밀번호", type="password")
-                if st.button("로그인", use_container_width=True):
+                if st.button("함께하기", use_container_width=True):
                     user = self.db.authenticate(u_id, u_pw)
                     if user:
                         st.session_state['logged_in'] = True
                         st.session_state['user_info'] = user[0]
                         st.rerun()
                     else: st.error("정보를 확인해주세요.")
+                st.write("---")
+                # [복구 포인트] 학교 등록 버튼 다시 추가
+                if st.button("우리 학교 등록하기", use_container_width=True):
+                    st.session_state['show_signup'] = True
+                    st.rerun()
+
+    def show_signup_page(self):
+        """[복구] 학교 검색 및 가입 페이지"""
+        _, col, _ = st.columns([1, 2, 1])
+        with col:
+            st.title("📝 학교 가입")
+            s_input = st.text_input("학교명 검색")
+            if len(s_input) >= 2:
+                s_list = self.db.get_school_list(s_input)
+                if s_list:
+                    opts = {f"{s['SCHUL_NM']} ({s['ORG_RDNMA']})": s for s in s_list}
+                    choice = st.selectbox("학교 선택", options=["선택하세요"] + list(opts.keys()))
+                    if choice != "선택하세요":
+                        sel = opts[choice]
+                        u_id = st.text_input("사용할 ID")
+                        pw = st.text_input("비밀번호", type="password")
+                        if st.button("가입 완료"):
+                            ok, msg = self.db.register(u_id, pw, sel['SCHUL_NM'], sel['ORG_RDNMA'])
+                            if ok: 
+                                st.success(msg)
+                                st.session_state['show_signup'] = False
+                                st.rerun()
+            if st.button("돌아가기"): 
+                st.session_state['show_signup'] = False
+                st.rerun()
 
     def show_dashboard(self):
         user = st.session_state['user_info']
         st.sidebar.title(f"🏫 {user['school_name']}")
-        
         df_students = self.db.fetch_students(user['school_id'])
         menu = st.sidebar.radio("관리 메뉴", ["실시간 학생 모니터링", "학생 위치 전송 시스템"])
         
@@ -94,37 +143,29 @@ class EyeLinkApp:
             with c2:
                 selected_id = st.session_state.get('selected_student_id')
                 is_active = False
-                lat, lon = 35.8714, 128.6014 # 기본 좌표
-                
+                lat, lon = 35.8714, 128.6014
                 if selected_id:
                     selected_row = df_students[df_students['id'] == selected_id].iloc[0]
                     is_active = (selected_row['status'] == "전송중")
                     lat, lon = selected_row['lat'], selected_row['lon']
-                
-                # [해결] 파란색 마커가 겹치지 않도록 is_active 상태 전달
                 self.render_kakao_map(lat, lon, is_active)
-        else: st.info("데이터가 없습니다.")
 
     def page_sender(self, school_id):
         st.title("📲 학생 위치 전송 시스템")
         with st.container(border=True):
             s_name = st.text_input("학생 이름 입력", placeholder="이름을 입력하세요.")
             col1, col2 = st.columns(2)
-            
             if col1.button("🚀 위치 전송 시작", use_container_width=True, type="primary"):
                 if s_name:
                     st.session_state['tracking_active'] = True
                     st.session_state['current_name'] = s_name
                     st.success(f"{s_name} 학생 전송 시작!")
                 else: st.warning("이름을 입력해주세요.")
-            
             if col2.button("⏹️ 전송 중지", use_container_width=True):
                 if st.session_state.get('current_name'):
-                    # 파이썬 로직으로 상태 즉시 업데이트 (빨간불 변경)
                     self.db.update_student_status(st.session_state['current_name'], "중단")
                     st.session_state['tracking_active'] = False
                     st.rerun()
-
             if st.session_state['tracking_active']:
                 self.render_gps_sender(st.session_state['current_name'], school_id)
 
@@ -134,16 +175,13 @@ class EyeLinkApp:
         <script>
         const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
         const studentId = parseInt(Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000));
-
         async function push() {{
             navigator.geolocation.getCurrentPosition(async (pos) => {{
                 const lat = pos.coords.latitude;
                 const lon = pos.coords.longitude;
                 const now = new Date().toISOString();
-
                 await fetch(sUrl + "/rest/v1/students", {{
-                    method: "POST",
-                    headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
+                    method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
                     body: JSON.stringify({{ id: studentId, student_name: sName, school_id: schoolId, status: "전송중", lat: lat, lon: lon, last_updated: now }})
                 }});
             }}, null, {{ enableHighAccuracy: true }});
@@ -158,17 +196,9 @@ class EyeLinkApp:
 
     def render_kakao_map(self, lat, lon, is_active):
         kakao_key = st.secrets['kakao']['js_key']
+        # [해결] 파란색 마커 제거: 실시간일 땐 깜빡이만, 중단 시에만 마커
+        marker_script = f"var content = '<div class=\"pulse-marker\"></div>'; new kakao.maps.CustomOverlay({{ position: new kakao.maps.LatLng({lat}, {lon}), content: content, map: map, yAnchor: 0.5 }});" if is_active else f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat}, {lon}), map: map }});"
         
-        # [해결] 파란색 마커 제거 로직: 실시간일 땐 CustomOverlay만, 중단 시에만 Marker 표시
-        marker_script = ""
-        if is_active:
-            marker_script = f"""
-            var content = '<div class="pulse-marker"></div>';
-            new kakao.maps.CustomOverlay({{ position: new kakao.maps.LatLng({lat}, {lon}), content: content, map: map, yAnchor: 0.5 }});
-            """
-        else:
-            marker_script = f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat}, {lon}), map: map }});"
-
         map_html = f"""
         <html>
         <head>
@@ -194,8 +224,9 @@ class EyeLinkApp:
         """
         components.html(map_html, height=620)
 
-# --- 3. 실행 ---
+# --- 3. 실행부 ---
 if __name__ == "__main__":
     app = EyeLinkApp()
     if st.session_state.get('logged_in'): app.show_dashboard()
+    elif st.session_state.get('show_signup'): app.show_signup_page()
     else: app.show_login_page()
