@@ -160,69 +160,103 @@ class EyeLinkApp:
 
     def render_gps_sender(self, s_name, school_id):
         """
-        [로그 전송 보장 버전]
-        1. 단순 fetch 구조: 복잡한 옵션을 제거하고 가장 표준적인 POST 방식으로 전송
-        2. 독립적 실행: 학생 정보 등록과 로그 전송을 분리하여 하나가 실패해도 로그는 남도록 구성
-        3. 디버깅 알림: 전송 실패 시 브라우저 콘솔(F12)에 상세 에러 출력
+        [int8 형식 맞춤 버전]
+        1. ID 숫자 변환: 문자열 studentId를 Number()로 감싸 int8 형식에 맞춤
+        2. 필드 명시: 수파베이스 컬럼명과 100% 일치하도록 소문자 구성
+        3. 전송 확인: 성공 시 초록색 메시지 출력
         """
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
         gps_js = f"""
         <script>
-        const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
-        const studentId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000).toString().padStart(6,'0');
+        const sUrl = "{url}";
+        const sKey = "{key}";
+        const schoolId = "{school_id}";
+        const sName = "{s_name}";
         
-        async function initSender() {{
-            // 1. 학생 기본 정보 등록 (최초 1회만)
-            await fetch(sUrl + "/rest/v1/students", {{
-                method: "POST", 
-                headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
-                body: JSON.stringify({{ id: studentId, student_name: sName, school_id: schoolId, status: "전송중" }})
-            }});
+        // 고유 ID 생성 후 숫자로 변환 (int8 대응)
+        const rawId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000);
+        const studentId = Number(rawId); 
 
-            // 2. 10초마다 위치 전송 반복
-            setInterval(() => {{
-                navigator.geolocation.getCurrentPosition(async (pos) => {{
-                    const lat = pos.coords.latitude;
-                    const lon = pos.coords.longitude;
-                    const timestamp = new Date().toISOString();
-
-                    // A. location_logs에 직접 POST (로그 전송)
-                    const logData = {{
-                        student_id: studentId,
-                        student_name: sName,
-                        lat: lat,
-                        lon: lon,
-                        created_at: timestamp
-                    }};
-
-                    fetch(sUrl + "/rest/v1/location_logs", {{
-                        method: "POST",
-                        headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
-                        body: JSON.stringify(logData)
-                    }})
-                    .then(r => console.log("Log Success:", r.status))
-                    .catch(e => console.error("Log Error:", e));
-
-                    // B. students 테이블 현재 위치 업데이트
-                    fetch(sUrl + "/rest/v1/students?id=eq." + studentId, {{
-                        method: "PATCH",
-                        headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
-                        body: JSON.stringify({{ lat: lat, lon: lon, status: "전송중" }})
-                    }});
-                    
-                }}, (err) => {{
-                    console.error("GPS Error:", err.message);
-                }}, {{ enableHighAccuracy: true, timeout: 5000 }});
-            }}, 10000);
+        function updateStatus(msg, color) {{
+            const el = document.getElementById('status-msg');
+            if(el) {{
+                el.innerText = msg;
+                el.style.color = color;
+            }}
         }}
-        initSender();
+
+        async function pushData() {{
+            if (!navigator.geolocation) {{
+                updateStatus("GPS 미지원 브라우저", "red");
+                return;
+            }}
+
+            navigator.geolocation.getCurrentPosition(async (pos) => {{
+                const lat = parseFloat(pos.coords.latitude.toFixed(6));
+                const lon = parseFloat(pos.coords.longitude.toFixed(6));
+                const now = new Date().toISOString();
+
+                try {{
+                    // 1. location_logs 전송 (student_id를 숫자로 전송)
+                    const resLog = await fetch(sUrl + "/rest/v1/location_logs", {{
+                        method: "POST",
+                        headers: {{
+                            "apikey": sKey,
+                            "Authorization": "Bearer " + sKey,
+                            "Content-Type": "application/json"
+                        }},
+                        body: JSON.stringify({{
+                            student_id: studentId, 
+                            student_name: sName,
+                            lat: lat,
+                            lon: lon,
+                            created_at: now
+                        }})
+                    }});
+
+                    // 2. students 전송 (id를 숫자로 전송)
+                    const resStd = await fetch(sUrl + "/rest/v1/students", {{
+                        method: "POST",
+                        headers: {{
+                            "apikey": sKey,
+                            "Authorization": "Bearer " + sKey,
+                            "Content-Type": "application/json",
+                            "Prefer": "resolution=merge-duplicates"
+                        }},
+                        body: JSON.stringify({{
+                            id: studentId,
+                            student_name: sName,
+                            school_id: schoolId,
+                            status: "전송중",
+                            lat: lat,
+                            lon: lon
+                        }})
+                    }});
+
+                    if(resLog.ok && resStd.ok) {{
+                        updateStatus("● 실시간 데이터 기록 중 (정상)", "#2e7d32");
+                    }} else {{
+                        const errText = await resLog.text();
+                        console.error("Error Detail:", errText);
+                        updateStatus("전송 실패: " + resLog.status, "red");
+                    }}
+                }} catch (e) {{
+                    updateStatus("네트워크 오류", "red");
+                }}
+            }}, (err) => {{
+                updateStatus("GPS 권한 허용 필요", "orange");
+            }}, {{ enableHighAccuracy: true }});
+        }}
+
+        pushData();
+        setInterval(pushData, 10000);
         </script>
-        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px; border:2px solid #2e7d32;">
-            <h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h4>
-            <p style="font-size:0.8rem; color:#666; margin-top:5px;">수파베이스 로그 전송 모드 가동 중</p>
+        <div style="text-align:center; padding:15px; background:#fff; border:2px solid #2e7d32; border-radius:10px;">
+            <h4 style="margin:0; color:#2e7d32;">🛰️ {s_name} 학생 위치 전송기</h4>
+            <div id="status-msg" style="font-weight:bold; margin-top:5px; font-size:0.9rem;">연결 중...</div>
         </div>
         """
-        components.html(gps_js, height=130)
+        components.html(gps_js, height=120)
 
     def render_kakao_map(self, df_students, logs_df):
         """[안정화 버전] 지도가 완전히 로드될 때까지 기다린 후 실행"""
