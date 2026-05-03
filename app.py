@@ -244,17 +244,16 @@ class EyeLinkApp:
         kakao_key = st.secrets['kakao']['js_key']
         
         # 2. 마커 및 오버레이 스크립트 구성
-        # 다른 학생들의 마커도 기본 파란색 마커가 아닌 다른 방식으로 처리하고 싶으시다면 이 부분을 수정하면 됩니다.
-        # 현재는 선택된 학생에 대한 파란색 마커 중복을 제거합니다.
         all_markers_js = ""
         for _, r in df_students.iterrows():
+            # [핵심 수정] 선택된 학생(selected_id)이 아닐 때만 파란색 마커 생성
+            # str() 변환을 통해 데이터 타입(int/str) 차이로 인한 오류 방지
             if r['lat'] != 0 and str(r['id']) != str(selected_id):
                 all_markers_js += f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({r['lat']}, {r['lon']}), map: map, title: '{r['student_name']}' }});"
 
-        # [수정 포인트] target_js 구문을 if-else로 명확히 분리하여 파란색 마커 생성을 차단
         target_js = ""
         if is_active:
-            # 실시간 전송 중일 때는 빨간색 깜빡이(CustomOverlay)만 생성
+            # 실시간 전송 중일 때: 파란색 마커 없이 빨간색 깜빡이만 생성
             target_js = f"""
             var content = '<div class="pulse-marker"></div>';
             new kakao.maps.CustomOverlay({{
@@ -263,7 +262,7 @@ class EyeLinkApp:
             }});
             """
         else:
-            # 전송 중이 아닐 때만 기본 마커 표시 (필요 없다면 이 부분도 비워두시면 됩니다)
+            # 전송 중이 아닐 때: 파란색 마커만 생성 (이것도 싫으시면 이 줄을 비우시면 됩니다)
             target_js = f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat}, {lon}), map: map }});"
 
         map_html = f"""
@@ -273,7 +272,7 @@ class EyeLinkApp:
             <style>
                 #map {{ width: 100%; height: 600px; border-radius: 15px; background-color: #f8f8f8; }}
                 .pulse-marker {{ width: 22px; height: 22px; background: #FF0000; border: 3px solid #FFF; border-radius: 50%; box-shadow: 0 0 12px rgba(255,0,0,0.8); animation: pulse 1.2s infinite; }}
-                @keyframes pulse {{ 0% {{ transform: scale(0.8); opacity: 1; }} 70% {{ transform: scale(1.2); opacity: 0.4; }} 100% {{ transform: scale(0.8); opacity: 1; }} }}
+                @keyframes pulse {{ 0% {{ transform: scale(0.8); opacity: 1; }} 70% {{ transform: scale(1.3); opacity: 0.4; }} 100% {{ transform: scale(0.8); opacity: 1; }} }}
             </style>
         </head>
         <body style="margin:0;">
