@@ -221,14 +221,18 @@ class EyeLinkApp:
         </script>
         """
         components.html(gps_js, height=0)
+    def update_student_status(self, s_name, status):
+        """[강화] 전송 중지 시 DB 상태를 즉시 '중단'으로 변경"""
+        try:
+            # 이름 기반 ID 생성 로직 통일
+            student_id = parseInt(Math.abs(s_name.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0) % 1000000));
+            self.client.table("students").update({"status": status}).eq("id", student_id).execute()
+        except: pass
+
     def render_kakao_map(self, df_students, logs_df):
-        """[안정화 버전] 지도가 완전히 로드될 때까지 기다린 후 실행"""
-        if df_students.empty:
-            return
-            
+        if df_students.empty: return
         selected_id = st.session_state.get('selected_student_id')
         
-        # 1. 중심 좌표 결정
         if not logs_df.empty:
             lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
             is_active = True
@@ -237,23 +241,21 @@ class EyeLinkApp:
             if not current.empty and current.iloc[0]['lat'] != 0:
                 lat, lon = current.iloc[0]['lat'], current.iloc[0]['lon']
                 is_active = False
-            else:
-                st.info("위치 기록이 아직 없습니다.")
-                return
+            else: return
 
         kakao_key = st.secrets['kakao']['js_key']
         
-        # 2. 마커 및 오버레이 스크립트 구성
+        # [핵심 수정] 반복문에서 선택된 학생(selected_id)을 완전히 제외
         all_markers_js = ""
         for _, r in df_students.iterrows():
-            # [핵심 수정] 선택된 학생(selected_id)이 아닐 때만 파란색 마커 생성
-            # str() 변환을 통해 데이터 타입(int/str) 차이로 인한 오류 방지
+            # ID를 문자열로 변환하여 비교 (데이터 타입 불일치 방지)
             if r['lat'] != 0 and str(r['id']) != str(selected_id):
                 all_markers_js += f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({r['lat']}, {r['lon']}), map: map, title: '{r['student_name']}' }});"
 
+        # [핵심 수정] 선택된 학생에 대해 '깜빡이' 혹은 '기본 마커' 중 하나만 출력
         target_js = ""
         if is_active:
-            # 실시간 전송 중일 때: 파란색 마커 없이 빨간색 깜빡이만 생성
+            # 실시간 전송 중: 빨간색 깜빡이만 표시 (파란색 마커 생성 코드 없음)
             target_js = f"""
             var content = '<div class="pulse-marker"></div>';
             new kakao.maps.CustomOverlay({{
@@ -262,45 +264,32 @@ class EyeLinkApp:
             }});
             """
         else:
-            # 전송 중이 아닐 때: 파란색 마커만 생성 (이것도 싫으시면 이 줄을 비우시면 됩니다)
+            # 전송 중단 상태: 파란색 기본 마커만 표시
             target_js = f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat}, {lon}), map: map }});"
 
         map_html = f"""
         <html>
         <head>
-            <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
             <style>
-                #map {{ width: 100%; height: 600px; border-radius: 15px; background-color: #f8f8f8; }}
+                #map {{ width: 100%; height: 600px; border-radius: 15px; background: #f8f8f8; }}
                 .pulse-marker {{ width: 22px; height: 22px; background: #FF0000; border: 3px solid #FFF; border-radius: 50%; box-shadow: 0 0 12px rgba(255,0,0,0.8); animation: pulse 1.2s infinite; }}
-                @keyframes pulse {{ 0% {{ transform: scale(0.8); opacity: 1; }} 70% {{ transform: scale(1.3); opacity: 0.4; }} 100% {{ transform: scale(0.8); opacity: 1; }} }}
+                @keyframes pulse {{ 0% {{ transform: scale(0.8); opacity: 1; }} 70% {{ transform: scale(1.2); opacity: 0.4; }} 100% {{ transform: scale(0.8); opacity: 1; }} }}
             </style>
         </head>
-        <body style="margin:0;">
-            <div id="map"></div>
+        <body style="margin:0;"><div id="map"></div>
             <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
             <script>
-                function initMap() {{
-                    if (typeof kakao === 'undefined' || !kakao.maps) {{
-                        setTimeout(initMap, 100);
-                        return;
-                    }}
-                    
+                function init() {{
+                    if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
                     kakao.maps.load(function() {{
-                        var container = document.getElementById('map');
-                        var options = {{
-                            center: new kakao.maps.LatLng({lat}, {lon}),
-                            level: 3
-                        }};
-                        var map = new kakao.maps.Map(container, options);
-                        
+                        var map = new kakao.maps.Map(document.getElementById('map'), {{ center: new kakao.maps.LatLng({lat}, {lon}), level: 3 }});
                         {all_markers_js}
                         {target_js}
                     }});
                 }}
-                initMap();
+                init();
             </script>
-        </body>
-        </html>
+        </body></html>
         """
         components.html(map_html, height=620)
 
