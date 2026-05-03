@@ -160,10 +160,10 @@ class EyeLinkApp:
 
     def render_gps_sender(self, s_name, school_id):
         """
-        [int8 형식 맞춤 버전]
-        1. ID 숫자 변환: 문자열 studentId를 Number()로 감싸 int8 형식에 맞춤
-        2. 필드 명시: 수파베이스 컬럼명과 100% 일치하도록 소문자 구성
-        3. 전송 확인: 성공 시 초록색 메시지 출력
+        [400 에러 해결 버전]
+        1. ID 정수화: Number.parseInt를 사용하여 소수점 없는 순수 정수(int8)로 변환
+        2. 스키마 일치: 필드명을 소문자로 강제하고, 필수 값이 누락되지 않도록 구성
+        3. 디버깅 강화: 에러 발생 시 상세 이유를 브라우저 콘솔에 출력
         """
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
         gps_js = f"""
@@ -173,9 +173,9 @@ class EyeLinkApp:
         const schoolId = "{school_id}";
         const sName = "{s_name}";
         
-        // 고유 ID 생성 후 숫자로 변환 (int8 대응)
+        // 정수형(int8) ID 생성: 소수점 없는 정수로 확실히 변환
         const rawId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000);
-        const studentId = Number(rawId); 
+        const studentId = Number.parseInt(rawId); 
 
         function updateStatus(msg, color) {{
             const el = document.getElementById('status-msg');
@@ -192,18 +192,20 @@ class EyeLinkApp:
             }}
 
             navigator.geolocation.getCurrentPosition(async (pos) => {{
-                const lat = parseFloat(pos.coords.latitude.toFixed(6));
-                const lon = parseFloat(pos.coords.longitude.toFixed(6));
+                // 좌표값 숫자 형식 강제화
+                const lat = Number(pos.coords.latitude.toFixed(6));
+                const lon = Number(pos.coords.longitude.toFixed(6));
                 const now = new Date().toISOString();
 
                 try {{
-                    // 1. location_logs 전송 (student_id를 숫자로 전송)
+                    // 1. location_logs 전송
                     const resLog = await fetch(sUrl + "/rest/v1/location_logs", {{
                         method: "POST",
                         headers: {{
                             "apikey": sKey,
                             "Authorization": "Bearer " + sKey,
-                            "Content-Type": "application/json"
+                            "Content-Type": "application/json",
+                            "Prefer": "return=minimal"
                         }},
                         body: JSON.stringify({{
                             student_id: studentId, 
@@ -214,7 +216,7 @@ class EyeLinkApp:
                         }})
                     }});
 
-                    // 2. students 전송 (id를 숫자로 전송)
+                    // 2. students 전송 (Upsert)
                     const resStd = await fetch(sUrl + "/rest/v1/students", {{
                         method: "POST",
                         headers: {{
@@ -234,29 +236,33 @@ class EyeLinkApp:
                     }});
 
                     if(resLog.ok && resStd.ok) {{
-                        updateStatus("● 실시간 데이터 기록 중 (정상)", "#2e7d32");
+                        updateStatus("● 데이터 전송 성공 (정상)", "#2e7d32");
                     }} else {{
-                        const errText = await resLog.text();
-                        console.error("Error Detail:", errText);
-                        updateStatus("전송 실패: " + resLog.status, "red");
+                        // 에러가 나면 상세 내용을 콘솔에 찍음
+                        const logErr = await resLog.text();
+                        const stdErr = await resStd.text();
+                        console.error("Log Error:", logErr);
+                        console.error("Student Error:", stdErr);
+                        updateStatus("전송 실패: 400 (데이터 형식 오류)", "red");
                     }}
                 }} catch (e) {{
-                    updateStatus("네트워크 오류", "red");
+                    updateStatus("네트워크 오류 발생", "red");
                 }}
             }}, (err) => {{
-                updateStatus("GPS 권한 허용 필요", "orange");
-            }}, {{ enableHighAccuracy: true }});
+                updateStatus("GPS 권한을 허용해주세요", "orange");
+            }}, {{ enableHighAccuracy: true, timeout: 10000 }});
         }}
 
+        // 시작 및 10초 반복
         pushData();
         setInterval(pushData, 10000);
         </script>
         <div style="text-align:center; padding:15px; background:#fff; border:2px solid #2e7d32; border-radius:10px;">
-            <h4 style="margin:0; color:#2e7d32;">🛰️ {s_name} 학생 위치 전송기</h4>
+            <h4 style="margin:0; color:#2e7d32;">🛰️ {s_name} 학생 위치 시스템</h4>
             <div id="status-msg" style="font-weight:bold; margin-top:5px; font-size:0.9rem;">연결 중...</div>
         </div>
         """
-        components.html(gps_js, height=120)
+        components.html(gps_js, height=130)
 
     def render_kakao_map(self, df_students, logs_df):
         """[안정화 버전] 지도가 완전히 로드될 때까지 기다린 후 실행"""
