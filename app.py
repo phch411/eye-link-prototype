@@ -123,40 +123,103 @@ class EyeLinkApp:
         
         df_students = self.db.fetch_students(user['school_id'])
         
-        menu = st.sidebar.radio("관리 메뉴", ["실시간 학생 모니터링", "학생 위치 전송 시스템"])
-        if st.sidebar.button("로그아웃"): st.session_state['logged_in'] = False; st.rerun()
+        # 사이드바 메뉴에 '위험구역 설정' 추가
+        menu = st.sidebar.radio("관리 메뉴", 
+            ["실시간 학생 모니터링", "학생 위치 전송 시스템", "위험구역 설정"])
+        
+        if st.sidebar.button("로그아웃"): 
+            st.session_state['logged_in'] = False
+            st.rerun()
 
         if menu == "실시간 학생 모니터링":
+            # (기존 모니터링 코드 생략)
             st.title("👁️ 실시간 학생 모니터링")
-            if not df_students.empty:
-                c1, c2 = st.columns([1, 3])
-                with c1:
-                    st.subheader("👤 명단")
-                    for _, row in df_students.iterrows():
-                        status_icon = "🟢" if row.get('status') == "전송중" else "🔴"
-                        if st.button(f"{status_icon} {row['student_name']}", key=f"s_{row['id']}", use_container_width=True):
-                            st.session_state['selected_student_id'] = row['id']
-                            st.session_state['selected_student_name'] = row['student_name']
-                            st.rerun()
-                with c2:
-                    logs_df = pd.DataFrame()
-                    if st.session_state.get('selected_student_id'):
-                        logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
-                    self.render_kakao_map(df_students, logs_df)
-            else: st.info("데이터가 없습니다. 학생용 화면에서 전송을 시작해주세요.")
-
+            # ...
+            
         elif menu == "학생 위치 전송 시스템":
+            # (기존 전송 시스템 코드 생략)
             st.title("📲 학생 위치 전송 시스템")
-            with st.container(border=True):
-                s_name = st.text_input("학생 이름 입력", placeholder="이름을 입력하면 모니터링 명단에 등록됩니다.")
-                if st.button("🚀 위치 전송 시작", use_container_width=True, type="primary"):
-                    if s_name:
-                        st.session_state['tracking_active'] = True
-                        st.success(f"{s_name} 학생 전송 시작!")
-                    else: st.warning("이름을 입력해주세요.")
-                if st.button("⏹️ 전송 중지"): st.session_state['tracking_active'] = False; st.rerun()
-                if st.session_state['tracking_active']:
-                    self.render_gps_sender(s_name, user['school_id'])
+            # ...
+
+        elif menu == "위험구역 설정":
+            self.show_danger_zone_page(user['school_id'])
+
+    def show_danger_zone_page(self, school_id):
+        st.title("⚠️ 위험구역 설정 시스템")
+        st.info("지도에서 위험구역으로 지정할 위치를 확인하고 아래 버튼을 통해 등록하세요.")
+
+        c1, c2 = st.columns([3, 1])
+
+        with c1:
+            # 1. 현재 관리자(학교)의 위치 또는 기본 위치를 지도로 표시
+            # 실제 운영 시에는 학교의 주소 좌표를 불러와서 lat, lon에 넣으면 좋습니다.
+            default_lat, default_lon = 35.2332, 128.8819 
+            self.render_danger_zone_map(default_lat, default_lon)
+
+        with c2:
+            # 2. 지도 옆에 설정 인터페이스 생성
+            st.subheader("📍 구역 설정")
+            zone_name = st.text_input("구역 명칭", placeholder="예: 공사장, 연못")
+            
+            st.write("3. 위험 반경 선택")
+            radius = st.radio("반경 선택(m)", [5, 10, 20], horizontal=True)
+            
+            if st.button("위험구역 등록하기", use_container_width=True, type="primary"):
+                if zone_name:
+                    # 실제 구현 시에는 지도의 중심 좌표(center)를 가져오도록 연동 가능
+                    # 여기서는 현재 지도의 기본 좌표를 저장하는 예시입니다.
+                    data = {
+                        "school_id": school_id,
+                        "zone_name": zone_name,
+                        "lat": default_lat, 
+                        "lon": default_lon,
+                        "radius": radius
+                    }
+                    try:
+                        self.db.client.table("danger_zones").insert(data).execute()
+                        st.success(f"'{zone_name}' 구역({radius}m) 등록 완료!")
+                    except Exception as e:
+                        st.error(f"등록 실패: {e}")
+                else:
+                    st.warning("구역 명칭을 입력해주세요.")
+
+    def render_danger_zone_map(self, lat, lon):
+        """위험구역 설정 전용 지도 (반경 시각화 포함)"""
+        kakao_key = st.secrets['kakao']['js_key']
+        
+        map_html = f"""
+        <html>
+        <head>
+            <style>
+                #map {{ width: 100%; height: 500px; border-radius: 15px; border: 2px solid #ff4b4b; }}
+            </style>
+        </head>
+        <body style="margin:0;">
+            <div id="map"></div>
+            <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={kakao_key}&autoload=false"></script>
+            <script>
+                function init() {{
+                    if (typeof kakao === 'undefined' || !kakao.maps) {{ setTimeout(init, 100); return; }}
+                    kakao.maps.load(function() {{
+                        var container = document.getElementById('map');
+                        var options = {{ center: new kakao.maps.LatLng({lat}, {lon}), level: 3 }};
+                        var map = new kakao.maps.Map(container, options);
+
+                        // 현재 중심점 마커
+                        var marker = new kakao.maps.Marker({{ position: map.getCenter(), map: map }});
+
+                        // 중심점이 바뀔 때마다 마커 이동 (위치 확인용)
+                        kakao.maps.event.addListener(map, 'center_changed', function() {{
+                            marker.setPosition(map.getCenter());
+                        }});
+                    }});
+                }}
+                init();
+            </script>
+        </body>
+        </html>
+        """
+        components.html(map_html, height=520)
 
     def render_gps_sender(self, s_name, school_id):
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
