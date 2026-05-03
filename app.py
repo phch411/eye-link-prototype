@@ -6,7 +6,7 @@ import requests
 import streamlit.components.v1 as components
 from datetime import datetime
 
-# [필수] 1순위: 페이지 설정
+# 1. 페이지 설정
 st.set_page_config(page_title="Eye-Link", layout="wide")
 
 # --- 1. 데이터베이스 관리 클래스 (Model) ---
@@ -18,7 +18,7 @@ class EyeLinkDB:
             self.client = create_client(self.url, self.key)
             self.neis_key = st.secrets["neis"]["api_key"]
         except Exception as e:
-            st.error("설정 오류: Streamlit Secrets를 확인해주세요.")
+            st.error("설정 오류: Secrets를 확인해주세요.")
 
     def authenticate(self, u_id, pw):
         try:
@@ -92,7 +92,7 @@ class EyeLinkApp:
                         st.session_state['logged_in'] = True
                         st.session_state['user_info'] = user[0]
                         st.rerun()
-                    else: st.error("정보를 다시 확인해 주세요.")
+                    else: st.error("정보를 확인해주세요.")
                 st.write("---")
                 if st.button("우리 학교 등록하기", use_container_width=True):
                     st.session_state['show_signup'] = True
@@ -143,7 +143,7 @@ class EyeLinkApp:
                     if st.session_state.get('selected_student_id'):
                         logs_df = self.db.fetch_location_logs(st.session_state['selected_student_id'])
                     self.render_kakao_map(df_students, logs_df)
-            else: st.info("데이터가 없습니다. 학생 위치 전송 시스템을 이용해 주세요.")
+            else: st.info("데이터가 없습니다. 학생용 화면에서 전송을 시작해주세요.")
 
         elif menu == "학생 위치 전송 시스템":
             st.title("📲 학생 위치 전송 시스템")
@@ -159,107 +159,53 @@ class EyeLinkApp:
                     self.render_gps_sender(s_name, user['school_id'])
 
     def render_gps_sender(self, s_name, school_id):
-        """
-        [긴급 조치 사항]
-        1. 단순화: 복잡한 async를 제거하고 가장 직관적인 fetch 구조로 변경
-        2. 가시화: 전송 성공/실패 시 브라우저 알림(alert)을 띄워 실제 작동 여부 확인
-        3. 필드 강제 매칭: student_id, student_name, lat, lon, school_id를 정확히 매칭
-        """
+        """[로그 해결 핵심] 데이터가 확실히 꽂히도록 만든 전송 스크립트"""
         url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
         gps_js = f"""
         <script>
-        const sUrl = "{url}";
-        const sKey = "{key}";
-        const schoolId = "{school_id}";
-        const sName = "{s_name}";
-        
-        // 고유 ID 생성
+        const sUrl = "{url}", sKey = "{key}", schoolId = "{school_id}", sName = "{s_name}";
         const studentId = Math.abs(sName.split('').reduce((a,b)=>{{a=((a<<5)-a)+b.charCodeAt(0);return a&a}},0) % 1000000).toString().padStart(6,'0');
         
-        function sendToSupabase() {{
-            if (!navigator.geolocation) {{
-                alert("이 브라우저는 GPS를 지원하지 않습니다.");
-                return;
-            }}
-
-            navigator.geolocation.getCurrentPosition((pos) => {{
-                const lat = pos.coords.latitude;
-                const lon = pos.coords.longitude;
+        async function sendData() {{
+            if (!navigator.geolocation) return;
+            
+            navigator.geolocation.getCurrentPosition(async (pos) => {{
+                const lat = pos.coords.latitude, lon = pos.coords.longitude;
                 const now = new Date().toISOString();
 
-                // 1. location_logs 테이블에 전송
+                // 1. location_logs에 기록 (동선용 누적 데이터)
                 fetch(sUrl + "/rest/v1/location_logs", {{
-                    method: "POST",
-                    headers: {{
-                        "apikey": sKey,
-                        "Authorization": "Bearer " + sKey,
-                        "Content-Type": "application/json",
-                        "Prefer": "return=minimal"
-                    }},
-                    body: JSON.stringify({{
-                        student_id: studentId,
-                        student_name: sName,
-                        lat: lat,
-                        lon: lon,
-                        created_at: now
-                    }})
-                }}).then(res => {{
-                    if(res.ok) console.log("로그 저장 완료");
-                    else console.error("로그 저장 에러: " + res.status);
+                    method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json" }},
+                    body: JSON.stringify({{ student_id: studentId, student_name: sName, lat: lat, lon: lon, created_at: now }})
                 }});
 
-                // 2. students 테이블 업데이트 (실시간 마커용)
+                // 2. students 테이블에 상태/위치 업데이트 (실시간 마커용)
                 fetch(sUrl + "/rest/v1/students", {{
-                    method: "POST",
-                    headers: {{
-                        "apikey": sKey,
-                        "Authorization": "Bearer " + sKey,
-                        "Content-Type": "application/json",
-                        "Prefer": "resolution=merge-duplicates"
-                    }},
-                    body: JSON.stringify({{
-                        id: studentId,
-                        student_name: sName,
-                        school_id: schoolId,
-                        status: "전송중",
-                        lat: lat,
-                        lon: lon
-                    }})
+                    method: "POST", headers: {{ "apikey": sKey, "Authorization": "Bearer "+sKey, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" }},
+                    body: JSON.stringify({{ id: studentId, student_name: sName, school_id: schoolId, status: "전송중", lat: lat, lon: lon }})
                 }});
-
-            }}, (err) => {{
-                console.error("GPS 오류: " + err.message);
-            }}, {{ enableHighAccuracy: true }});
+            }}, (err) => console.error(err), {{ enableHighAccuracy: true }});
         }}
-
-        // 시작 즉시 전송 후 10초마다 반복
-        sendToSupabase();
-        setInterval(sendToSupabase, 10000);
+        sendData();
+        setInterval(sendData, 10000); // 10초마다 실행
         </script>
-        <div style="text-align:center; padding:20px; background:#e8f5e9; border-radius:10px; border:2px solid #2e7d32;">
-            <h3 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h3>
-            <p style="margin:5px 0 0 0; color:#666;">수파베이스 연동 확인용 디버깅 모드 가동</p>
-        </div>
+        <div style="text-align:center; padding:15px; background:#e8f5e9; border-radius:10px;"><h4 style="color:#2e7d32; margin:0;">🛰️ {s_name} 학생 위치 전송 중</h4></div>
         """
-        components.html(gps_js, height=150)
+        components.html(gps_js, height=120)
 
     def render_kakao_map(self, df_students, logs_df):
-        """[수정] NameError 해결 및 연결 상태별 시각화 보강"""
         if df_students.empty: return
         selected_id = st.session_state.get('selected_student_id')
         
-        # 1. 좌표 및 활성화 상태 결정 (기본 위치 없음)
         if not logs_df.empty:
             lat, lon = logs_df.iloc[0]['위도'], logs_df.iloc[0]['경도']
             is_active = True
         else:
-            # logs_df가 비어있으면 students 테이블에서 마지막 위치를 가져옴
             current = df_students[df_students['id'].astype(str) == str(selected_id)] if selected_id else pd.DataFrame()
             if not current.empty and current.iloc[0]['lat'] != 0:
-                lat, lon = current.iloc[0]['lat'], current.iloc[0]['lon'] # [해결] NameError 변수 수정
+                lat, lon = current.iloc[0]['lat'], current.iloc[0]['lon']
                 is_active = False
-            else:
-                st.info("위치 기록이 아직 없습니다."); return
+            else: st.info("위치 기록이 아직 없습니다."); return
 
         kakao_key = st.secrets['kakao']['js_key']
         all_markers_js = ""
@@ -267,17 +213,13 @@ class EyeLinkApp:
             if r['lat'] != 0 and str(r['id']) != str(selected_id):
                 all_markers_js += f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({r['lat']}, {r['lon']}), map: map, title: '{r['student_name']}' }});"
 
-        target_js = ""
-        if is_active:
-            target_js = f"var content = '<div class=\"pulse-marker\"></div>'; new kakao.maps.CustomOverlay({{position:new kakao.maps.LatLng({lat},{lon}), content:content, map:map, yAnchor:0.5}});"
-        else:
-            # 전송 중이 아닐 때는 일반 마커로 마지막 위치 표시
-            target_js = f"new kakao.maps.Marker({{ position: new kakao.maps.LatLng({lat},{lon}), map: map, title: '마지막 위치' }});"
+        target_js = "var content = '<div class=\"pulse-marker\"></div>';" if is_active else ""
+        target_js += f"new kakao.maps.CustomOverlay({{position:new kakao.maps.LatLng({lat},{lon}), content:content||null, map:map, yAnchor:0.5}});"
+        if not is_active: target_js = f"new kakao.maps.Marker({{position:new kakao.maps.LatLng({lat},{lon}), map:map}});"
 
         map_html = f"""
         <html>
         <head>
-            <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
             <style>
                 #map {{ width: 100%; height: 600px; border-radius: 15px; background: #eee; }}
                 .pulse-marker {{ width: 18px; height: 18px; background: #FF0000; border: 3px solid #FFF; border-radius: 50%; box-shadow: 0 0 10px rgba(255,0,0,0.7); animation: pulse 1.5s infinite; }}
